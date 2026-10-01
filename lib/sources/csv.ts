@@ -3,7 +3,10 @@ import { getOrSet } from '@/lib/cache';
 import { allCompetitions } from '@/lib/registry';
 
 type Row = Record<string, string>;
+type Avg = MatchData['leagueAvg'];
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
+const FIELDS = ['gf', 'ga', 'fhGf', 'fhGa', 'cornersFor', 'cornersAgainst', 'cardsFor', 'shotsFor', 'foulsFor', 'htZeroZeroRate'] as const;
 const ALIAS: Record<string, string> = {
   'man united': 'manchester united', 'man utd': 'manchester united', 'man city': 'manchester city',
   spurs: 'tottenham', wolves: 'wolverhampton', forest: 'nottingham forest',
@@ -45,30 +48,43 @@ function parse(text: string): Row[] {
   });
 }
 
-async function load(c: Competition): Promise<Row[] | null> {
-  const path = c.csvPath;
-  if (!path) return null;
+async function fetchRows(path: string, ttl: number): Promise<Row[] | null> {
   try {
-    return await getOrSet(`csv:${path}`, SIX_HOURS, async () => {
+    return await getOrSet(`csv:${path}`, ttl, async () => {
       const res = await fetch(`https://www.football-data.co.uk/${path}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      let rows = parse(await res.text());
-      if (path.startsWith('new/')) {
-        const top = rows.reduce((m, r) => Math.max(m, parseFloat(r.Season) || 0), 0);
-        rows = rows
-          .filter((r) => parseFloat(r.Season) === top)
-          .map((r) => ({ ...r, HomeTeam: r.Home, AwayTeam: r.Away, FTHG: r.HG, FTAG: r.AG }));
-      }
-      return rows.filter((r) => r.FTHG && r.FTAG);
+      return parse(await res.text());
     });
   } catch {
     return null;
   }
 }
 
-export async function loadTeamStats(competition: Competition, team: string): Promise<TeamStats | null> {
-  const rows = await load(competition);
-  if (!rows?.length) return null;
+function priorPath(path: string): string | null {
+  const m = path.match(/^(mmz4281\/)(\d{2})(\d{2})(\/.*)$/);
+  const back = (s: string): string => String((parseInt(s, 10) + 99) % 100).padStart(2, '0');
+  return m ? `${m[1]}${back(m[2])}${back(m[3])}${m[4]}` : null;
+}
+
+const played = (rows: Row[]): Row[] => rows.filter((r) => r.FTHG && r.FTAG);
+const yr = (r: Row): number => parseInt((r.Season || '').slice(0, 4), 10) || 0;
+
+async function load(c: Competition): Promise<{ cur: Row[]; prior: Row[] }> {
+  const path = c.csvPath;
+  if (!path) return { cur: [], prior: [] };
+  const isNew = path.startsWith('new/');
+  const pp = isNew ? null : priorPath(path);
+  const [rows, old] = await Promise.all([fetchRows(path, SIX_HOURS), pp ? fetchRows(pp, DAY) : null]);
+  if (!isNew) return { cur: played(rows ?? []), prior: played(old ?? []) };
+  const all = rows ?? [];
+  const seasons = Array.from(new Set(all.map(yr))).filter(Boolean).sort((a, b) => b - a);
+  const pick = (s: number | undefined): Row[] =>
+    s === undefined ? [] : played(all.filter((r) => yr(r) === s).map((r) => ({ ...r, HomeTeam: r.Home, AwayTeam: r.Away, FTHG: r.HG, FTAG: r.AG })));
+  return { cur: pick(seasons[0]), prior: pick(seasons[1]) };
+}
+
+function statsFor(rows: Row[], team: string): TeamStats | null {
+  if (!rows.length) return null;
   const names = Array.from(new Set(rows.map((r) => r.HomeTeam).concat(rows.map((r) => r.AwayTeam)))).filter(Boolean);
   const name = names.find((x) => key(x) === key(team)) ?? names.find((x) => sameTeam(x, team));
   if (!name) return null;
@@ -99,6 +115,19 @@ export async function loadTeamStats(competition: Competition, team: string): Pro
   };
 }
 
+export async function loadTeamStats(competition: Competition, team: string): Promise<TeamStats | null> {
+  const { cur, prior } = await load(competition);
+  const a = statsFor(cur, team);
+  const b = statsFor(prior, team);
+  if (!b) return a;
+  if (!a) return { ...b, games: Math.round(Math.min(b.games, 12)) };
+  const kp = Math.max(0, Math.min(b.games, 12 - 0.4 * a.games));
+  const w = a.games + kp;
+  const out: TeamStats = { ...a, games: Math.round(w), goalMinutes: [] };
+  for (const f of FIELDS) out[f] = (a.games * a[f] + kp * b[f]) / w;
+  return out;
+}
+
 export async function loadTeamStatsAnywhere(team: string): Promise<{ stats: TeamStats; competition: Competition } | null> {
   const comps = allCompetitions().filter((c) => c.csvPath?.startsWith('mmz4281'));
   const found = await Promise.all(comps.map(async (c) => ({ c, stats: await loadTeamStats(c, team) })));
@@ -106,20 +135,27 @@ export async function loadTeamStatsAnywhere(team: string): Promise<{ stats: Team
   return hit && hit.stats ? { stats: hit.stats, competition: hit.c } : null;
 }
 
+const leagueMeans = (rows: Row[]): Avg => ({
+  goals: mean(rows, ['FTHG', 'FTAG']), fhGoals: mean(rows, ['HTHG', 'HTAG']),
+  corners: mean(rows, ['HC', 'AC']), cards: mean(rows, ['HY', 'AY', 'HR', 'AR']),
+});
+
 export async function loadLeagueAvg(competition: Competition): Promise<MatchData['leagueAvg'] | null> {
-  const rows = await load(competition);
-  if (!rows?.length) return null;
-  return {
-    goals: mean(rows, ['FTHG', 'FTAG']), fhGoals: mean(rows, ['HTHG', 'HTAG']),
-    corners: mean(rows, ['HC', 'AC']), cards: mean(rows, ['HY', 'AY', 'HR', 'AR']),
-  };
+  const { cur, prior } = await load(competition);
+  const a = cur.length ? leagueMeans(cur) : null;
+  const b = prior.length ? leagueMeans(prior) : null;
+  if (!a || !b) return a ?? b;
+  const mp = Math.max(0, Math.min(prior.length, 120 - 0.4 * cur.length));
+  const mix = (x: number, y: number): number =>
+    x === 0 ? y : y === 0 ? x : (cur.length * x + mp * y) / (cur.length + mp);
+  return { goals: mix(a.goals, b.goals), fhGoals: mix(a.fhGoals, b.fhGoals), corners: mix(a.corners, b.corners), cards: mix(a.cards, b.cards) };
 }
 
 export async function loadReferee(competition: Competition, name: string): Promise<RefereeStats | null> {
-  const rows = await load(competition);
+  const { cur, prior } = await load(competition);
   const q = name.trim().toLowerCase();
-  if (!rows?.length || !q || !('Referee' in rows[0])) return null;
-  const mine = rows.filter((r) => {
+  if (!q) return null;
+  const mine = cur.concat(prior).filter((r) => {
     const x = (r.Referee || '').trim().toLowerCase();
     return !!x && (x.includes(q) || q.includes(x));
   });

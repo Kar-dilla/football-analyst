@@ -19,5 +19,6 @@ export async function GET(req: Request): Promise<Response> {
     fixtures,
     tableSize: table?.size ?? null,
     anywhereCompetition: anywhere?.competition.id ?? null,
+    rawNote: 'games is the effective sample (current games plus up to 10 prior-season pseudo-games, fading to 0 by game 30)',
   });
 }
