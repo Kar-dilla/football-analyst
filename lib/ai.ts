@@ -169,18 +169,19 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
     const raw = num(m.probability);
     if (raw === undefined) throw new Error('NO_PROBABILITY');
     const bp = base.probability;
+    const baseP = clamp(bp, 0.01, 0.99);
     // Enforced in code: the model is never trusted with the +-0.08 limit.
-    const probability = clamp(clamp(raw, bp - MAX_DELTA, bp + MAX_DELTA), 0.01, 0.99);
+    const modelP = clamp(clamp(raw, bp - MAX_DELTA, bp + MAX_DELTA), 0.01, 0.99);
     const w = widthFor(base.sampleSize);
-    const probLow = clamp(Math.min(num(m.probLow) ?? probability, probability - w), 0, 1);
-    const probHigh = clamp(Math.max(num(m.probHigh) ?? probability, probability + w), 0, 1);
+    const modelLow = clamp(Math.min(num(m.probLow) ?? modelP, modelP - w), 0, 1);
+    const modelHigh = clamp(Math.max(num(m.probHigh) ?? modelP, modelP + w), 0, 1);
     const modelConf: Conf = isConf(m.confidence) ? m.confidence : 'low';
 
     // Enforced in code: drop any AI statement quoting a number that is not in the supplied data
     // (or the model's own probability / delta). The prompt rule alone was ignored by the model.
     const allowed = allowedNumbers(ctx, [
-      bp, raw, probability, probLow, probHigh, num(m.probLow), num(m.probHigh),
-      Math.abs(raw - bp), Math.abs(probability - bp), MAX_DELTA,
+      bp, raw, modelP, modelLow, modelHigh, num(m.probLow), num(m.probHigh),
+      Math.abs(raw - bp), Math.abs(modelP - bp), MAX_DELTA,
     ]);
     let dropped = 0;
     const ground = (v: unknown): string[] => {
@@ -193,9 +194,17 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
     const tailRisks = ground(m.tailRisks);
     const evidence = ground(m.evidence);
     const modelGaps = ground(m.gaps);
-    const note: string[] = dropped > 0
-      ? ['Removed ' + dropped + ' AI statement(s) citing numbers not in the supplied data']
-      : [];
+
+    // Enforced in code: a probability shift with no grounded driver is unexplained noise.
+    // Keep the statistical base (and a symmetric band around it) instead of the model's number.
+    const discarded = drivers.length === 0 && Math.abs(modelP - baseP) >= 1e-4;
+    const probability = drivers.length === 0 ? baseP : modelP;
+    const probLow = discarded ? clamp(probability - w, 0, 1) : modelLow;
+    const probHigh = discarded ? clamp(probability + w, 0, 1) : modelHigh;
+
+    const notes: string[] = [];
+    if (dropped > 0) notes.push('Removed ' + dropped + ' AI statement(s) citing numbers not in the supplied data');
+    if (discarded) notes.push('AI adjustment discarded: no grounded driver; statistical base used');
 
     return {
       probability: r4(probability),
@@ -204,7 +213,7 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
       confidence: lower(modelConf, confCap(data, base)), // lowest of model, tier cap, sample cap
       drivers: drivers.slice(0, 5),
       tailRisks: tailRisks.slice(0, 5),
-      evidence: [...evidence.slice(0, 5 - note.length), ...note],
+      evidence: [...evidence.slice(0, 5 - notes.length), ...notes],
       gaps: dedupeGaps([...toStrings(data.missing), ...modelGaps]).slice(0, 5),
     };
   } catch (e) {
