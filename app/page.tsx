@@ -1,9 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import AnalyzeForm from '@/components/AnalyzeForm';
 import ResultCard from '@/components/ResultCard';
-import type { Analysis, GapFacts } from '@/lib/types';
+import Shortlist from '@/components/Shortlist';
+import PickLog from '@/components/PickLog';
+import { loadPicks, savePick } from '@/lib/store';
+import type { Analysis, GapFacts, Pick } from '@/lib/types';
 
 export default function Page() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -11,6 +14,10 @@ export default function Page() {
   const [raw, setRaw] = useState('');
   const [competitionId, setCompetitionId] = useState('');
   const [usedGapFill, setUsedGapFill] = useState(false);
+  const [picks, setPicks] = useState<Pick[]>([]);
+
+  useEffect(() => { setPicks(loadPicks()); }, []);
+  const refresh = () => setPicks(loadPicks());
 
   async function rerun(gap: GapFacts): Promise<void> {
     const body: Record<string, unknown> = { raw, threshold, gap };
@@ -42,6 +49,13 @@ export default function Page() {
       {analysis && (
         <ResultCard analysis={analysis} threshold={threshold} onRerun={rerun} />
       )}
+      {analysis && (
+        <button className="btn" onClick={() => { savePick({ id: crypto.randomUUID(), analysis, threshold, usedGapFill }); refresh(); }}>
+          Save pick
+        </button>
+      )}
+      <Shortlist picks={picks} />
+      <PickLog picks={picks} onChange={refresh} />
     </main>
   );
 }
