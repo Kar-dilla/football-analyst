@@ -66,6 +66,58 @@ function prune(v: unknown): unknown {
   return v === null || v === undefined ? undefined : v;
 }
 
+// ---- Numeric grounding: an AI statement may only quote numbers that exist in the context we sent ----
+// Tokens mixing letters and digits ("1x2", "1st", "H2H", "05T10") are blanked first. The same
+// tokenizer runs on the context and on the model text, so both sides are always consistent.
+const MIXED = /\b(?=\w*\d)(?=\w*[A-Za-z])\w+\b/g;
+const numsIn = (s: string): number[] => (s.replace(MIXED, ' ').match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+const nkey = (n: number) => Math.round(n * 1e4);
+
+function allowedNumbers(context: string, extra: Array<number | undefined>): Set<number> {
+  const out = new Set<number>();
+  const add = (x: number) => {
+    if (!Number.isFinite(x)) return;
+    out.add(nkey(x));
+    if (x >= 0 && x <= 1) { // probabilities may be quoted as percentages or at 2 decimals
+      out.add(nkey(x * 100));
+      out.add(nkey(Math.round(x * 100)));
+      out.add(nkey(Math.round(x * 1000) / 10));
+      out.add(nkey(Math.round(x * 100) / 100));
+    }
+  };
+  numsIn(context).forEach(add);
+  extra.forEach((x) => { if (typeof x === 'number') add(x); });
+  return out;
+}
+
+const grounded = (s: string, allowed: Set<number>): boolean => numsIn(s).every((n) => allowed.has(nkey(n)));
+
+// ---- Gap dedupe: "referee", "referee information missing", "referee assignment missing" -> one entry ----
+const GAP_FILLER = new Set([
+  'missing', 'information', 'info', 'data', 'assignment', 'assigned', 'unavailable', 'available', 'not', 'no',
+  'provided', 'details', 'detail', 'detailed', 'specific', 'further', 'additional', 'found', 'lack', 'lacks',
+  'lacking', 'absent', 'unknown', 'unclear', 'unconfirmed', 'the', 'of', 'for', 'a', 'an', 'is', 'are', 'was',
+  'were', 'to', 'in', 'on', 'and', 'or', 'any', 'about', 'beyond', 'from', 'yet',
+]);
+
+function gapKey(g: string): string {
+  const toks = g.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .filter((t) => !GAP_FILLER.has(t))
+    .map((t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t));
+  return toks.length ? Array.from(new Set(toks)).sort().join(' ') : g.toLowerCase().trim();
+}
+
+/** Keeps the first occurrence, so canonical data.missing labels (listed first) win over model wording. */
+function dedupeGaps(list: string[]): string[] {
+  const seen = new Set<string>();
+  return list.filter((g) => {
+    const k = gapKey(g);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 function buildContext(data: MatchData, base: BaseResult, flags: Flag[]): string {
   const q = data.query;
   const g = data.gap;
@@ -112,7 +164,8 @@ function ruleBased(data: MatchData, base: BaseResult, flags: Flag[]): Adjusted {
 
 export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): Promise<{ probability: number; probLow: number; probHigh: number; confidence: Conf; drivers: string[]; tailRisks: string[]; evidence: string[]; gaps: string[] }> {
   try {
-    const m = asObject(await callJSON(SYSTEM, buildContext(data, base, flags)));
+    const ctx = buildContext(data, base, flags);
+    const m = asObject(await callJSON(SYSTEM, ctx));
     const raw = num(m.probability);
     if (raw === undefined) throw new Error('NO_PROBABILITY');
     const bp = base.probability;
@@ -122,15 +175,37 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
     const probLow = clamp(Math.min(num(m.probLow) ?? probability, probability - w), 0, 1);
     const probHigh = clamp(Math.max(num(m.probHigh) ?? probability, probability + w), 0, 1);
     const modelConf: Conf = isConf(m.confidence) ? m.confidence : 'low';
+
+    // Enforced in code: drop any AI statement quoting a number that is not in the supplied data
+    // (or the model's own probability / delta). The prompt rule alone was ignored by the model.
+    const allowed = allowedNumbers(ctx, [
+      bp, raw, probability, probLow, probHigh, num(m.probLow), num(m.probHigh),
+      Math.abs(raw - bp), Math.abs(probability - bp), MAX_DELTA,
+    ]);
+    let dropped = 0;
+    const ground = (v: unknown): string[] => {
+      const all = toStrings(v);
+      const kept = all.filter((s) => grounded(s, allowed));
+      dropped += all.length - kept.length;
+      return kept;
+    };
+    const drivers = ground(m.drivers);
+    const tailRisks = ground(m.tailRisks);
+    const evidence = ground(m.evidence);
+    const modelGaps = ground(m.gaps);
+    const note: string[] = dropped > 0
+      ? ['Removed ' + dropped + ' AI statement(s) citing numbers not in the supplied data']
+      : [];
+
     return {
       probability: r4(probability),
       probLow: r4(probLow),
       probHigh: r4(probHigh),
       confidence: lower(modelConf, confCap(data, base)), // lowest of model, tier cap, sample cap
-      drivers: toStrings(m.drivers).slice(0, 5),
-      tailRisks: toStrings(m.tailRisks).slice(0, 5),
-      evidence: toStrings(m.evidence).slice(0, 5),
-      gaps: Array.from(new Set([...toStrings(data.missing), ...toStrings(m.gaps)])).slice(0, 5),
+      drivers: drivers.slice(0, 5),
+      tailRisks: tailRisks.slice(0, 5),
+      evidence: [...evidence.slice(0, 5 - note.length), ...note],
+      gaps: dedupeGaps([...toStrings(data.missing), ...modelGaps]).slice(0, 5),
     };
   } catch (e) {
     console.warn('[ai.adjust] fallback:', e instanceof Error ? e.message : e);
