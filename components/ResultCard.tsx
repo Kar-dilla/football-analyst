@@ -1,6 +1,7 @@
 'use client';
 
 import type { Analysis, GapFacts } from '@/lib/types';
+import GapFill from '@/components/GapFill';
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const MARK = { up: '▲', down: '▼', neutral: '●' };
@@ -115,6 +116,7 @@ export default function ResultCard(props: { analysis: Analysis; threshold: numbe
           </ul>
         </details>
       )}
+      {props.onRerun && <GapFill needs={a.needs} onRerun={props.onRerun} />}
     </div>
   );
 }
