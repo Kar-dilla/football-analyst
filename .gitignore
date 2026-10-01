@@ -4,3 +4,8 @@ node_modules
 .env*.local
 .vercel
 *.tsbuildinfo
+
+# env files (keep the template)
+.env
+.env.*
+!.env.example
