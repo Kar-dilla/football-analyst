@@ -27,6 +27,10 @@ function systemPrompt(): string {
     '- "cards", "yellow cards" -> cards_ou; "btts" -> btts (side yes or no)',
     '- "home win" -> 1x2 with side "1"; "double chance" -> double_chance; plain "goals" -> goals_ou',
     '- Leave competitionId out when the league is not stated.',
+    '- A team name followed by "win", "to win", "wins" or "straight win" -> market 1x2; side "1" if that team is the first-named (home) team, "2" if it is the second-named (away) team.',
+    '- "draw" or "tie" -> market 1x2, side "X".',
+    '- "<team> or draw", "<team> double chance" or "<team> DC" -> market double_chance; side "1X" for the home team, "X2" for the away team. "either team to win" or "no draw" -> side "12".',
+    '- If the user writes "straight win", "match result", "1x2" or "double chance" WITHOUT naming a team, leave side out (do not guess).',
   ].join('\n');
 }
 
