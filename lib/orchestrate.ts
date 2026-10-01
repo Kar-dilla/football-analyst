@@ -2,6 +2,7 @@ import { getCompetition } from '@/lib/registry';
 import { parseQuery } from '@/lib/parse';
 import { getOrSet } from '@/lib/cache';
 import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee } from '@/lib/sources/csv';
+import { loadIntlTeamStats, loadIntlLeagueAvg } from '@/lib/sources/intl';
 import { getFixtures, getTable } from '@/lib/sources/fd';
 import { getLineupsAndInjuries, getRecentEvents } from '@/lib/sources/apifootball';
 import { tavilySearch } from '@/lib/sources/tavily';
@@ -28,11 +29,17 @@ const dayOf = (iso: string) => (Number.isNaN(Date.parse(iso)) ? '' : new Date(is
 async function fetchMatch(query: ParsedQuery, competition: Competition): Promise<Fetched> {
   const { home: h, away: a } = query;
   const missing: string[] = [];
+  const national = competition.type === 'national';
   let home: TeamStats | null;
   let away: TeamStats | null;
   let leagueAvg: MatchData['leagueAvg'] | null;
   let statsComp = competition;
-  if (competition.csvPath) {
+  if (national) {
+    [home, away, leagueAvg] = await Promise.all([loadIntlTeamStats(h), loadIntlTeamStats(a), loadIntlLeagueAvg()]);
+    if (!home) throw new Error('NO_DATA: could not find ' + h + ' in the international results data');
+    if (!away) throw new Error('NO_DATA: could not find ' + a + ' in the international results data');
+    if (!leagueAvg) throw new Error('NO_DATA: international results data is unavailable');
+  } else if (competition.csvPath) {
     [home, away, leagueAvg] = await Promise.all([loadTeamStats(competition, h), loadTeamStats(competition, a), loadLeagueAvg(competition)]);
   } else {
     const [hr, ar] = await Promise.all([loadTeamStatsAnywhere(h), loadTeamStatsAnywhere(a)]);
@@ -41,11 +48,12 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     if (hr) statsComp = hr.competition;
     leagueAvg = hr ? await loadLeagueAvg(hr.competition) : null;
   }
-  const ev = wantsEvents(query.market);
-  const wantTable = competition.tier === 'A' || competition.tier === 'B';
+  const ev = !national && wantsEvents(query.market);
+  const wantTable = !national && (competition.tier === 'A' || competition.tier === 'B');
+  const wantFx = !national || !!competition.fdCode;
   const [fxH, fxA, table, news, lu, evH, evA] = await Promise.all([
-    getFixtures(competition, h),
-    getFixtures(competition, a),
+    wantFx ? getFixtures(competition, h) : Promise.resolve(null),
+    wantFx ? getFixtures(competition, a) : Promise.resolve(null),
     wantTable ? getTable(competition) : Promise.resolve(null),
     tavilySearch(`${h} vs ${a} team news injuries`),
     getLineupsAndInjuries({ home: h, away: a }),
@@ -55,7 +63,7 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
   if (!home) missing.push('home stats');
   if (!away) missing.push('away stats');
   if (!leagueAvg) missing.push('league averages');
-  if (!fxH || !fxA) missing.push('fixtures');
+  if (wantFx && (!fxH || !fxA)) missing.push('fixtures');
   if (wantTable && !table) missing.push('table');
   if (!lu) missing.push('injuries/lineups');
   if (ev && (!evH || !evA)) missing.push('recent events');
@@ -106,6 +114,10 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
   const competition = getCompetition(query.competitionId ?? '');
   if (!competition) throw new Error('LEAGUE_NOT_FOUND');
   const market = query.market;
+  const national = competition.type === 'national';
+  if (national && !['goals_ou', 'btts', '1x2', 'double_chance'].includes(market)) throw new Error('NO_DATA: national-team matches support goals, BTTS, 1X2 and double chance only');
+  const validSides = ({ btts: ['yes', 'no'], '1x2': ['1', 'X', '2'], double_chance: ['1X', 'X2', '12'] } as Record<string, string[]>)[market];
+  if (validSides && !validSides.includes(query.side ?? '')) throw new Error('NO_DATA: this market needs a side, e.g. "France 1X double chance", "France to win" or "both teams to score yes"');
   if (competition.csvPath?.startsWith('new/') && ['fh_goals_ou', 'sh_goals_ou', 'corners_ou', 'cards_ou'].includes(market)) throw new Error('NO_DATA: only goals, early-goal and sub markets are available for ' + competition.name);
   // ':ev' stops an events-less cache entry from serving window_goals / fh_subs
   const key = `match:${competition.id}:${query.home}|${query.away}${wantsEvents(market) ? ':ev' : ''}`.toLowerCase();
@@ -137,6 +149,7 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
     line = pickSafestLine(ladder, threshold, side);
     if (delta !== 0) evidence = [...ai.evidence, 'Ladder shifted by the AI adjustment (' + (delta * 100).toFixed(1) + ' pts)'];
   }
+  if (national) evidence = [...evidence.slice(0, 4), 'National-team model: recent results weighted by opponent strength (Elo); home advantage not modelled'];
   return {
     query, tier: competition.tier, base: outBase,
     probability: ai.probability, probLow: ai.probLow, probHigh: ai.probHigh, confidence: ai.confidence,
