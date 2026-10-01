@@ -19,6 +19,8 @@ const sample: MatchData = {
 
 const ask = (market: MarketKind, side: ParsedQuery['side'], line = 2.5): MatchData =>
   ({ ...sample, query: { ...sample.query, market, side, line } });
+const twin = (side: ParsedQuery['side']): MatchData =>
+  ({ ...ask('1x2', side), home: sample.home, away: sample.home, competition: { ...sample.competition, type: 'club' } });
 const prob = (r: BaseResult | null) => (r ? r.probability : NaN);
 
 export async function GET(req: Request): Promise<Response> {
@@ -38,7 +40,11 @@ export async function GET(req: Request): Promise<Response> {
     sh: { over15: prob(halvesModel(ask('sh_goals_ou', 'over', 1.5))) },
     ladder,
     safestLine085: safestLine(ladder, 0.85) ?? null,
-    checks: { over05GtOver25: o05 > o25, oneXTwoSumsToOne: Math.abs(sum - 1) < 0.001 },
+    checks: {
+      over05GtOver25: o05 > o25,
+      oneXTwoSumsToOne: Math.abs(sum - 1) < 0.001,
+      homeAdvOk: prob(goalsModel(twin('1'))) > prob(goalsModel(twin('2'))),
+    },
   };
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
 }

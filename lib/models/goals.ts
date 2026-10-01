@@ -5,7 +5,7 @@ import { buildLadder } from '@/lib/ladder';
 const clamp = (p: number) => Math.min(1, Math.max(0, p));
 
 export function goalsModel(data: MatchData): BaseResult | null {
-  const { home, away, leagueAvg, query } = data;
+  const { home, away, leagueAvg, query, competition } = data;
   const { market, side, line } = query;
   if (!home || !away) return null;
   if (![home.gf, home.ga, away.gf, away.ga, leagueAvg.goals].every((n) => Number.isFinite(n) && n >= 0)) return null;
@@ -13,8 +13,13 @@ export function goalsModel(data: MatchData): BaseResult | null {
   const rawA = (away.gf + home.ga) / 2;
   const total = 0.75 * (rawH + rawA) + 0.25 * leagueAvg.goals;
   const raw = rawH + rawA;
-  const lh = raw > 0 ? (rawH * total) / raw : total / 2;
-  const la = raw > 0 ? (rawA * total) / raw : total / 2;
+  const baseH = raw > 0 ? (rawH * total) / raw : total / 2;
+  const baseA = raw > 0 ? (rawA * total) / raw : total / 2;
+  // home advantage: club 1.12, 'nations' 1.10, any other national/youth (neutral venue) 1.0
+  const adv = competition.type === 'club' ? 1.12 : competition.id === 'nations' ? 1.1 : 1.0;
+  const advSum = baseH * adv + baseA / adv;
+  const lh = advSum > 0 ? (baseH * adv * total) / advSum : total / 2;
+  const la = advSum > 0 ? ((baseA / adv) * total) / advSum : total / 2;
   let probability: number;
   let ladder: LadderRow[] | undefined;
   if (market === 'goals_ou') {
