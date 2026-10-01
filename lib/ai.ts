@@ -119,8 +119,8 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
     // Enforced in code: the model is never trusted with the +-0.08 limit.
     const probability = clamp(clamp(raw, bp - MAX_DELTA, bp + MAX_DELTA), 0.01, 0.99);
     const w = widthFor(base.sampleSize);
-    const probLow = Math.min(clamp(num(m.probLow) ?? probability - w, 0, 1), probability);
-    const probHigh = Math.max(clamp(num(m.probHigh) ?? probability + w, 0, 1), probability);
+    const probLow = clamp(Math.min(num(m.probLow) ?? probability, probability - w), 0, 1);
+    const probHigh = clamp(Math.max(num(m.probHigh) ?? probability, probability + w), 0, 1);
     const modelConf: Conf = isConf(m.confidence) ? m.confidence : 'low';
     return {
       probability: r4(probability),
