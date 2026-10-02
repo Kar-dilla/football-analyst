@@ -3,17 +3,20 @@ import { allCompetitions } from '@/lib/registry';
 
 const BASE = 'https://v3.football.api-sports.io';
 const H = 3_600_000;
+const MIN_FIXTURES = 5;
+const FALLBACK_SEASONS = [2025, 2024, 2023];
 
 interface Item {
   team?: { id?: number; name?: string };
   player?: { name?: string };
-  fixture?: { id?: number; status?: { elapsed?: number | null; short?: string } };
+  fixture?: { id?: number; date?: string; status?: { elapsed?: number | null; short?: string } };
   league?: { id?: number };
   teams?: { home?: { name?: string }; away?: { name?: string } };
   events?: { type?: string; detail?: string; time?: { elapsed?: number | null }; team?: { id?: number } }[];
   startXI?: { player?: { name?: string } }[];
 }
 type Events = { goalMinutes: number[]; fhSubRate: number };
+type Season = Events & { completed: number };
 type Gap = { injuries: string[]; expectedLineup: string[] };
 type Live = { id: number; home: string; away: string; minute: number | null; status: string };
 
@@ -40,9 +43,32 @@ async function teamId(name: string): Promise<number | null> {
   return typeof id === 'number' ? id : null;
 }
 
-export async function getRecentEvents(team: string): Promise<{ goalMinutes: number[]; fhSubRate: number } | null> {
+// Goal minutes + first-half-sub rate over a set of fixtures that include events.
+// `completed` = how many of those fixtures have status FT.
+function summarize(id: number, fixtures: Item[]): Season | null {
+  if (fixtures.length === 0) return null;
+  const goalMinutes: number[] = [];
+  let fhSubs = 0;
+  for (const fx of fixtures) {
+    const events = fx.events ?? [];
+    for (const ev of events) {
+      const m = ev.time?.elapsed;
+      if (ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && typeof m === 'number' && m >= 0 && m <= 120) {
+        goalMinutes.push(m);
+      }
+    }
+    if (events.some((ev) => ev.team?.id === id && (ev.type ?? '').toLowerCase() === 'subst' && (ev.time?.elapsed ?? 999) <= 45)) {
+      fhSubs++;
+    }
+  }
+  const completed = fixtures.filter((f) => f.fixture?.status?.short === 'FT').length;
+  return goalMinutes.length > 0 ? { goalMinutes, fhSubRate: fhSubs / fixtures.length, completed } : null;
+}
+
+// Current method (last=10). Never throws; failures are not cached and give null.
+async function currentSeason(team: string, lc: string): Promise<Season | null> {
   try {
-    return await getOrSet<Events | null>('af:events:' + team.trim().toLowerCase(), 12 * H, async () => {
+    return await getOrSet<Season | null>('af:events:' + lc, 12 * H, async () => {
       const id = await teamId(team);
       if (id === null) return null;
       const last = await call(`/fixtures?team=${id}&last=10`, `af:last:${id}`, 12 * H);
@@ -50,23 +76,58 @@ export async function getRecentEvents(team: string): Promise<{ goalMinutes: numb
       if (ids.length === 0) return null;
       const joined = ids.join('-');
       const fixtures = await call(`/fixtures?ids=${joined}`, `af:ids:${joined}`, 12 * H);
-      if (fixtures.length === 0) return null;
-      const goalMinutes: number[] = [];
-      let fhSubs = 0;
-      for (const fx of fixtures) {
-        const events = fx.events ?? [];
-        for (const ev of events) {
-          const m = ev.time?.elapsed;
-          if (ev.type === 'Goal' && ev.detail !== 'Missed Penalty' && typeof m === 'number' && m >= 0 && m <= 120) {
-            goalMinutes.push(m);
-          }
-        }
-        if (events.some((ev) => ev.team?.id === id && (ev.type ?? '').toLowerCase() === 'subst' && (ev.time?.elapsed ?? 999) <= 45)) {
-          fhSubs++;
-        }
-      }
-      return goalMinutes.length > 0 ? { goalMinutes, fhSubRate: fhSubs / fixtures.length } : null;
+      return summarize(id, fixtures);
     });
+  } catch {
+    return null;
+  }
+}
+
+// Older season s: all fixtures for the season, keep FT, newest 5 by date.
+// Free plans block /fixtures?ids=, so events come from one /fixtures/events call per fixture.
+// Throws on API failure (so getOrSet does not cache it); the caller catches.
+function olderSeason(lc: string, id: number, s: number): Promise<Season | null> {
+  return getOrSet<Season | null>(`af:events:${lc}:${s}`, 168 * H, async () => {
+    const all = await call(`/fixtures?team=${id}&season=${s}`, `af:season:${id}:${s}`, 168 * H);
+    const stamp = (f: Item): number => Date.parse(f.fixture?.date ?? '') || 0;
+    const ids = all
+      .filter((f) => f.fixture?.status?.short === 'FT' && typeof f.fixture?.id === 'number')
+      .sort((a, b) => stamp(b) - stamp(a))
+      .slice(0, MIN_FIXTURES)
+      .map((f) => f.fixture?.id)
+      .filter((x): x is number => typeof x === 'number');
+    if (ids.length < MIN_FIXTURES) return null;
+    const fixtures: Item[] = await Promise.all(
+      ids.map(async (fid) => ({
+        fixture: { id: fid, status: { short: 'FT' } },
+        events: (await call(`/fixtures/events?fixture=${fid}`, `af:fxevents:${fid}`, 168 * H)) as unknown as Item['events'],
+      })),
+    );
+    return summarize(id, fixtures);
+  });
+}
+
+export async function getRecentEvents(team: string): Promise<{ goalMinutes: number[]; fhSubRate: number; season?: number } | null> {
+  try {
+    const lc = team.trim().toLowerCase();
+    const current = await currentSeason(team, lc);
+    const own = current ? { goalMinutes: current.goalMinutes, fhSubRate: current.fhSubRate } : null;
+    if (current && current.completed >= MIN_FIXTURES) return own;
+
+    const id = await teamId(team).catch(() => null);
+    if (id === null) return own;
+    for (const s of FALLBACK_SEASONS) {
+      try {
+        const r = await olderSeason(lc, id, s);
+        if (r && r.completed >= MIN_FIXTURES) {
+          return { goalMinutes: r.goalMinutes, fhSubRate: r.fhSubRate, season: s };
+        }
+      } catch {
+        // failure (not cached): try the next season
+      }
+    }
+    // no older season qualified: keep whatever the current season gave (or null)
+    return own;
   } catch {
     return null;
   }
