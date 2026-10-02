@@ -18,7 +18,8 @@ const SYSTEM =
 const FACTS_SYSTEM =
   'Extract football match facts from the text. Return ONLY JSON: ' +
   '{ injuries: string[], expectedLineup: string[], weather?: string, referee?: string, lateNews: string[] }. ' +
-  'Example: "striker out" -> injuries ["striker out"]. Use only the text; never invent facts.';
+  'Example: "striker out" -> injuries ["striker out"]. Use only the text; never invent facts. ' +
+  'Each item must be a short factual phrase of at most 120 characters. Summarise long passages into short phrases; at most 8 items per list; keep only injuries, suspensions, expected lineups, weather, referee, and clear late news such as match stakes, rotation or fixture congestion.';
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
@@ -222,6 +223,23 @@ export async function adjust(data: MatchData, base: BaseResult, flags: Flag[]): 
   }
 }
 
+// Hard limits for extracted facts: strings <= 200 chars, <= 20 items per list (model path and keyword fallback).
+const FACT_MAX_CHARS = 200;
+const FACT_MAX_ITEMS = 20;
+const factClip = (s: string): string => s.slice(0, FACT_MAX_CHARS);
+const factClipList = (a: string[]): string[] => a.map(factClip).filter((s) => s !== '').slice(0, FACT_MAX_ITEMS);
+const capFacts = (f: GapFacts): GapFacts => {
+  const out: GapFacts = {
+    ...f,
+    injuries: factClipList(f.injuries),
+    expectedLineup: factClipList(f.expectedLineup),
+    lateNews: factClipList(f.lateNews),
+  };
+  if (out.weather) out.weather = factClip(out.weather);
+  if (out.referee) out.referee = factClip(out.referee);
+  return out;
+};
+
 // Rule-based fallback. Splits on newlines AND semicolons; matches "out" as a whole word
 // so "about"/"without" do not count as injuries.
 function ruleFacts(text: string): GapFacts {
@@ -229,7 +247,7 @@ function ruleFacts(text: string): GapFacts {
   for (const line of text.split(/[\r\n;]+/).map((s) => s.trim()).filter(Boolean)) {
     (/\bout\b|injur|doubt|suspend/i.test(line) ? facts.injuries : facts.lateNews).push(line);
   }
-  return facts;
+  return capFacts(facts);
 }
 
 export async function extractFacts(text: string, imageBase64?: string): Promise<GapFacts> {
@@ -247,7 +265,7 @@ export async function extractFacts(text: string, imageBase64?: string): Promise<
     if (weather) facts.weather = weather;
     if (referee) facts.referee = referee;
     const empty = !facts.injuries.length && !facts.expectedLineup.length && !facts.lateNews.length && !weather && !referee;
-    return empty ? ruleFacts(text) : facts; // a small model may answer {} -> use rules instead
+    return empty ? ruleFacts(text) : capFacts(facts); // a small model may answer {} -> use rules instead
   } catch (e) {
     console.warn('[ai.extractFacts] fallback:', e instanceof Error ? e.message : e);
     return ruleFacts(text);

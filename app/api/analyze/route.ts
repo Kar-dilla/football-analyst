@@ -7,31 +7,38 @@ export const maxDuration = 60;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-const bad = (error = 'Invalid request.') => json({ error }, 400);
+const bad = (error = 'Invalid request') => json({ error }, 400);
 const fail = (e: unknown): Response => {
   const m = e instanceof Error ? e.message : '';
   const err = (error: string, status: number) => json({ error }, status);
   if (m.startsWith('MISSING_KEY:'))
     return err(`Server setup incomplete: ${m.slice(12).trim()} is not set in the Vercel environment variables.`, 500);
-  if (m.includes('HTTP_429')) return err('Too many requests right now. Wait a minute and try again.', 429);
+  if (m.includes('HTTP_429')) return err('Too many requests right now. Wait a minute and try again shortly.', 429);
   if (m.includes('HTTP_')) return err('A data service is unavailable. Try again shortly.', 502);
   if (m.startsWith('NO_DATA'))
     return err((m.startsWith('NO_DATA:') ? m.slice(8).trim() : '') || 'No data found for that request.', 404);
   if (m.includes('LEAGUE_NOT_FOUND')) return err('Could not identify the league. Pick it from the league list.', 400);
-  if (m.includes('PARSE_FAILED')) return err('Could not understand that query. Try: Arsenal vs Chelsea corners over 6.5', 400);
+  if (m.includes('PARSE_FAILED')) return err('Could not understand that query. Try: Arsenal vs Chelsea corners over 6.5.', 400);
   if (m.includes('EMPTY_INPUT')) return err('Paste some text first.', 400);
   return err('Something went wrong. Try again.', 500);
 };
-// Returns a cleaned string[] (max 20 items, each <= 200 chars), or null if invalid.
+// Returns a cleaned string[]: non-strings and empties dropped, each item trimmed and cut to 200 chars,
+// first 20 kept (absent -> []). Returns null only if the value is present but not an array.
 const list = (v: unknown): string[] | null => {
   if (v === undefined || v === null) return [];
-  if (!Array.isArray(v) || v.length > 20) return null;
-  if (!v.every((x) => typeof x === 'string' && x.length <= 200)) return null;
-  return (v as string[]).map((x) => x.trim()).filter((x) => x !== '');
+  if (!Array.isArray(v)) return null;
+  return v
+    .filter((x): x is string => typeof x === 'string')
+    .map((x) => x.trim().slice(0, 200))
+    .filter((x) => x !== '')
+    .slice(0, 20);
 };
-// Returns a trimmed string (<= 200 chars, '' if absent), or null if invalid.
-const text = (v: unknown): string | null =>
-  v === undefined || v === null ? '' : typeof v === 'string' && v.length <= 200 ? v.trim() : null;
+// Returns a trimmed string cut to 200 chars, or undefined if absent, not a string, or blank.
+const text = (v: unknown): string | undefined => {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim().slice(0, 200);
+  return t === '' ? undefined : t;
+};
 
 export async function POST(req: Request): Promise<Response> {
   const b = (await req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -50,10 +57,8 @@ export async function POST(req: Request): Promise<Response> {
     const injuries = list(g.injuries);
     const expectedLineup = list(g.expectedLineup);
     const lateNews = list(g.lateNews);
-    const weather = text(g.weather);
-    const referee = text(g.referee);
-    if (!injuries || !expectedLineup || !lateNews || weather === null || referee === null) return bad();
-    gap = { injuries, expectedLineup, weather, referee: referee || undefined, lateNews };
+    if (!injuries || !expectedLineup || !lateNews) return bad('Invalid request: the extra info is malformed.');
+    gap = { injuries, expectedLineup, weather: text(g.weather), referee: text(g.referee), lateNews };
   }
   try {
     return json(await analyze(raw, t, gap, cid));
