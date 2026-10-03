@@ -96,6 +96,20 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
   return { data, statsComp };
 }
 
+// MatchData for one query (15-min cache per match). Used by analyze() and bestPicks().
+// statsComp (where referee data lives) is parked in a WeakMap so analyze() can still load referees.
+const statsCompOf = new WeakMap<MatchData, Competition>();
+export async function loadMatchData(query: ParsedQuery, competition: Competition): Promise<MatchData> {
+  const market = query.market;
+  // ':ev' stops an events-less cache entry from serving window_goals / fh_subs
+  const key = `match:${competition.id}:${query.home}|${query.away}${wantsEvents(market) ? ':ev' : ''}`.toLowerCase();
+  const { data: cached, statsComp } = await getOrSet<Fetched>(key, 15 * 60 * 1000, () => fetchMatch(query, competition));
+  // current query overrides the cached one (market differs per request); copy missing so the cache is never mutated
+  const data: MatchData = { ...cached, query, gap: cached.gap, missing: [...cached.missing] };
+  statsCompOf.set(data, statsComp);
+  return data;
+}
+
 function runModel(data: MatchData): BaseResult | null {
   switch (data.query.market) {
     case 'goals_ou': case 'btts': case '1x2': case 'double_chance': return goalsModel(data);
@@ -107,8 +121,8 @@ function runModel(data: MatchData): BaseResult | null {
   }
 }
 
-export async function analyze(raw: string, threshold: number, gap?: GapFacts, competitionId?: string): Promise<Analysis> {
-  const query = await parseQuery(raw);
+export async function analyze(raw: string, threshold: number, gap?: GapFacts, competitionId?: string, presetQuery?: ParsedQuery): Promise<Analysis> {
+  const query = presetQuery ? { ...presetQuery } : await parseQuery(raw);
   const forced = competitionId ? getCompetition(competitionId) : null;
   if (forced) query.competitionId = forced.id;
   const competition = getCompetition(query.competitionId ?? '');
@@ -119,13 +133,10 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
   const validSides = ({ btts: ['yes', 'no'], '1x2': ['1', 'X', '2'], double_chance: ['1X', 'X2', '12'] } as Record<string, string[]>)[market];
   if (validSides && !validSides.includes(query.side ?? '')) throw new Error('NO_DATA: this market needs a side, e.g. "France 1X double chance", "France to win" or "both teams to score yes"');
   if (competition.csvPath?.startsWith('new/') && ['fh_goals_ou', 'sh_goals_ou', 'corners_ou', 'cards_ou'].includes(market)) throw new Error('NO_DATA: only goals, early-goal and sub markets are available for ' + competition.name);
-  // ':ev' stops an events-less cache entry from serving window_goals / fh_subs
-  const key = `match:${competition.id}:${query.home}|${query.away}${wantsEvents(market) ? ':ev' : ''}`.toLowerCase();
-  const { data: cached, statsComp } = await getOrSet<Fetched>(key, 15 * 60 * 1000, () => fetchMatch(query, competition));
-  // current query overrides the cached one (market differs per request); copy missing so the cache is never mutated
-  const data: MatchData = { ...cached, query, gap: gap ?? cached.gap, missing: [...cached.missing] };
+  const data = await loadMatchData(query, competition);
+  if (gap) data.gap = gap;
   if (gap?.referee) {
-    data.referee = await loadReferee(statsComp, gap.referee);
+    data.referee = await loadReferee(statsCompOf.get(data) ?? competition, gap.referee);
     if (!data.referee) data.missing.push('referee');
   }
   const base = runModel(data);
