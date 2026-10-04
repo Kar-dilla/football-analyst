@@ -82,6 +82,7 @@ export default function Page() {
 
   return (
     <main className="wrap stack" data-gapfill={usedGapFill ? '1' : '0'}>
+      <a href="/live" className="btn">Live mode</a>
       <AnalyzeForm onResult={onResult} />
       {analyzeErr && <div className="badge warn">{analyzeErr}</div>}
       {analysis && (

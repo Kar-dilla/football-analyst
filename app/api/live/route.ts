@@ -35,6 +35,11 @@ export async function POST(req: Request): Promise<Response> {
   const keys = ['minute', 'homeGoals', 'awayGoals', 'homeReds', 'awayReds'];
   if (!keys.every((k) => inRange(s[k]))) return bad();
   const state: LiveState = { minute: s.minute as number, homeGoals: s.homeGoals as number, awayGoals: s.awayGoals as number, homeReds: s.homeReds as number, awayReds: s.awayReds as number };
+  for (const k of ['corners', 'yellows'] as const) {
+    if (s[k] === undefined || s[k] === null) continue;
+    if (!inRange(s[k], 0, k === 'corners' ? 40 : 20)) return bad();
+    state[k] = s[k] as number;
+  }
   const mine = b.mine === undefined || b.mine === null ? undefined : b.mine;
   if (mine !== undefined && (typeof mine !== 'string' || mine.length > 80)) return bad();
   let allowed: AllowedRange | undefined;
