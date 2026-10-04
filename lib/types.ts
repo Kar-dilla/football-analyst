@@ -43,6 +43,7 @@ export interface MatchData {
   table?: { homePos: number; awayPos: number; size: number };
   news: string[]; gap?: GapFacts;
   missing: string[];          // what could not be found
+  strengths?: { home: { att: number; def: number; n: number }; away: { att: number; def: number; n: number }; homeAdv: number; mu: number };   // att/def are multipliers vs the league average (1 = average; def above 1 means concedes more); n = effective weighted games; homeAdv = home goals / away goals for an average pair; mu = league mean goals per team per match
 }
 
 export interface LadderRow { line: number; over: number; under: number }

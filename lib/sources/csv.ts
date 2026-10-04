@@ -1,6 +1,8 @@
 import type { Competition, MatchData, RefereeStats, TeamStats } from '@/lib/types';
 import { getOrSet } from '@/lib/cache';
 import { allCompetitions } from '@/lib/registry';
+import { fitStrengths } from '@/lib/models/strengths';
+import type { FitResult, MatchRow } from '@/lib/models/strengths';
 
 type Row = Record<string, string>;
 type Avg = MatchData['leagueAvg'];
@@ -164,4 +166,56 @@ export async function loadReferee(competition: Competition, name: string): Promi
     name: mine[0].Referee, games: mine.length,
     cardsPerGame: mean(mine, ['HY', 'AY', 'HR', 'AR']), foulsPerGame: mean(mine, ['HF', 'AF']),
   };
+}
+
+// ---- team strengths: attack/defence multipliers fitted on current + prior season ----
+function dayMs(s: string | undefined): number | null {
+  const m = (s || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/);
+  if (!m) return null;
+  const d = parseInt(m[1], 10), mo = parseInt(m[2], 10), y = parseInt(m[3], 10) + (m[3].length === 2 ? 2000 : 0);
+  const t = Date.UTC(y, mo - 1, d), c = new Date(t);
+  return c.getUTCFullYear() === y && c.getUTCMonth() === mo - 1 && c.getUTCDate() === d ? t : null;
+}
+
+function matchRows(rows: Row[], seasonW: number, now: number): MatchRow[] {
+  const out: MatchRow[] = [];
+  for (const r of rows) {
+    const date = dayMs(r.Date), home = (r.HomeTeam || '').trim(), away = (r.AwayTeam || '').trim();
+    const hs = (r.FTHG ?? '').trim(), as2 = (r.FTAG ?? '').trim();
+    if (date === null || !home || !away || !hs || !as2) continue;
+    const hg = Number(hs), ag = Number(as2);
+    if (!isFinite(hg) || !isFinite(ag)) continue;
+    const age = Math.max(0, (now - date) / DAY);
+    out.push({ date, home, away, hg, ag, w: seasonW * Math.max(0.05, Math.exp((-age * Math.LN2) / 90)) });
+  }
+  return out;
+}
+
+export async function loadFit(competition: Competition): Promise<FitResult | null> {
+  if (!competition.csvPath) return null;
+  try {
+    return await getOrSet<FitResult>('fit:' + competition.id, SIX_HOURS, async () => {
+      const { cur, prior } = await load(competition);
+      const now = Date.now();
+      const fit = fitStrengths(matchRows(cur, 1, now).concat(matchRows(prior, 0.5, now)));
+      if (!fit) throw new Error('NO_FIT'); // thrown so a miss is never cached
+      return fit;
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function loadStrengths(competition: Competition, home: string, away: string): Promise<MatchData['strengths'] | null> {
+  const fit = await loadFit(competition);
+  if (!fit) return null;
+  const names = Array.from(fit.att.keys());
+  const find = (t: string): string | undefined => {
+    const q = (t || '').trim().toLowerCase();
+    return names.find((x) => x.toLowerCase() === q) ?? names.find((x) => sameTeam(x, t));
+  };
+  const h = find(home), a = find(away);
+  if (h === undefined || a === undefined || h === a) return null;
+  const side = (t: string) => ({ att: fit.att.get(t) ?? 1, def: fit.def.get(t) ?? 1, n: fit.n.get(t) ?? 0 });
+  return { home: side(h), away: side(a), homeAdv: fit.homeAdv, mu: fit.mu };
 }

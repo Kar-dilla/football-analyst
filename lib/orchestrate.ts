@@ -1,7 +1,7 @@
 import { getCompetition } from '@/lib/registry';
 import { parseQuery } from '@/lib/parse';
 import { getOrSet } from '@/lib/cache';
-import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee } from '@/lib/sources/csv';
+import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee, loadStrengths } from '@/lib/sources/csv';
 import { loadIntlTeamStats, loadIntlLeagueAvg } from '@/lib/sources/intl';
 import { getFixtures, getTable } from '@/lib/sources/fd';
 import { getLineupsAndInjuries, getRecentEvents } from '@/lib/sources/apifootball';
@@ -51,7 +51,8 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
   const ev = !national && wantsEvents(query.market);
   const wantTable = !national && (competition.tier === 'A' || competition.tier === 'B');
   const wantFx = !national || !!competition.fdCode;
-  const [fxH, fxA, table, news, lu, evH, evA] = await Promise.all([
+  const wantStr = competition.type === 'club' && !!competition.csvPath;
+  const [fxH, fxA, table, news, lu, evH, evA, str] = await Promise.all([
     wantFx ? getFixtures(competition, h) : Promise.resolve(null),
     wantFx ? getFixtures(competition, a) : Promise.resolve(null),
     wantTable ? getTable(competition) : Promise.resolve(null),
@@ -59,6 +60,7 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     getLineupsAndInjuries({ home: h, away: a }),
     ev ? getRecentEvents(h) : Promise.resolve(null),
     ev ? getRecentEvents(a) : Promise.resolve(null),
+    wantStr && home && away ? loadStrengths(competition, home.name, away.name) : Promise.resolve(null),
   ]);
   if (!home) missing.push('home stats');
   if (!away) missing.push('away stats');
@@ -93,6 +95,7 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     gap: lu ? { injuries: lu.injuries, expectedLineup: lu.expectedLineup, weather: '', lateNews: [] } : undefined,
     missing,
   };
+  if (str) data.strengths = str;
   return { data, statsComp };
 }
 
