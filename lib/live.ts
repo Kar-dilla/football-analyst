@@ -130,6 +130,8 @@ export async function livePicks(match: string, competitionId: string, state: Liv
     if (!cur || c.probability > cur.probability) best.set(c.group, c);
   }
   const top = Array.from(best.values()).sort((a, b) => b.probability - a.probability).slice(0, 3);
+  // Corners and cards always get a slot when priced, so goal markets do not crowd them out.
+  for (const g of ['corners', 'cards']) { const x = best.get(g); if (x && !top.includes(x)) top.push(x); }
 
   // The user's own bet, priced from the same grid (or the corners/cards pace).
   let mineItem: LiveItem | null = null;

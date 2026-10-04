@@ -153,7 +153,7 @@ export default function LivePage() {
           {shown && <div className="muted">Updated at {at}</div>}
           {res.mine && <PickCard head="Your bet" pick={res.mine} />}
           {shown && <h2>Top live picks</h2>}
-          {shown && res.top.slice(0, 3).map((p) => <PickCard key={`${p.group}|${p.label}`} pick={p} chip />)}
+          {shown && res.top.slice(0, 5).map((p) => <PickCard key={`${p.group}|${p.label}`} pick={p} chip />)}
           <div className="muted">{res.note}</div>
           <div className="muted">Update the score and tap again to refresh. Live picks can be stale by the time you type them.</div>
         </div>
