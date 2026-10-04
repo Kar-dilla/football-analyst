@@ -32,9 +32,16 @@ export async function GET(req: Request): Promise<Response> {
   const d = prob(goalsModel(ask('1x2', 'X')));
   const a = prob(goalsModel(ask('1x2', '2')));
   const sum = h + d + a;
+  const drawFlat = prob(goalsModel(ask('1x2', 'X'), { rho: 0, spread: 0 }));
+  const dc1X = prob(goalsModel(ask('double_chance', '1X')));
+  const dcX2 = prob(goalsModel(ask('double_chance', 'X2')));
+  const dc12 = prob(goalsModel(ask('double_chance', '12')));
   const body = {
     goals: { over05: o05, over25: o25 },
     oneXTwo: { '1': h, X: d, '2': a, sum },
+    drawProbability: d,
+    drawLift: d > drawFlat,
+    doubleChance: { '1X': dc1X, X2: dcX2, '12': dc12 },
     btts: { yes: prob(goalsModel(ask('btts', 'yes'))) },
     fh: { over05: prob(halvesModel(ask('fh_goals_ou', 'over', 0.5))) },
     sh: { over15: prob(halvesModel(ask('sh_goals_ou', 'over', 1.5))) },
@@ -44,6 +51,7 @@ export async function GET(req: Request): Promise<Response> {
       over05GtOver25: o05 > o25,
       oneXTwoSumsToOne: Math.abs(sum - 1) < 0.001,
       homeAdvOk: prob(goalsModel(twin('1'))) > prob(goalsModel(twin('2'))),
+      dcSumsOk: Math.abs(dc1X + dcX2 + dc12 - 2) < 0.001,
     },
   };
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
