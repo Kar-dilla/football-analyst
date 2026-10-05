@@ -1,0 +1,91 @@
+import { getOrSet } from '@/lib/cache';
+
+export interface LiveMatch { home: string; away: string; state: 'pre' | 'in' | 'post'; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null }
+
+// Loose shape of ESPN's unofficial JSON: every field is optional and re-checked at runtime.
+interface Team { id?: unknown; displayName?: unknown }
+interface Side { homeAway?: unknown; score?: unknown; team?: Team }
+interface Detail { redCard?: unknown; type?: { text?: unknown }; team?: Team }
+interface Comp { competitors?: unknown; details?: unknown }
+interface Ev { status?: { displayClock?: unknown; type?: { state?: unknown; description?: unknown } }; competitions?: unknown }
+
+const SLUGS: Record<string, string> = {
+  epl: 'eng.1', seriea: 'ita.1', laliga: 'esp.1', bundesliga: 'ger.1', ligue1: 'fra.1',
+  eredivisie: 'ned.1', portugal: 'por.1', belgium: 'bel.1', superlig: 'tur.1', brazil: 'bra.1',
+  mls: 'usa.1', japan: 'jpn.1', saudi: 'ksa.1', india: 'ind.1', ucl: 'uefa.champions',
+  uel: 'uefa.europa', uecl: 'uefa.europa.conf', nations: 'uefa.nations', worldcup: 'fifa.world',
+  afcon: 'caf.nations',
+};
+
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+function minuteOf(ev: Ev): number | null {
+  const t = ev.status?.type;
+  if (t?.state !== 'in') return null;
+  if (t?.description === 'Halftime') return 45;
+  const m = /^(\d+)(?:\+(\d+))?/.exec(String(ev.status?.displayClock ?? '').replace(/['’\s]/g, ''));
+  return m ? Math.min(120, Math.max(1, Number(m[1]) + Number(m[2] ?? 0))) : null;
+}
+
+function redsOf(comp: Comp, h: Side, a: Side): [number | null, number | null] {
+  if (!Array.isArray(comp.details)) return [null, null];
+  let hr = 0;
+  let ar = 0;
+  for (const d of comp.details as Detail[]) {
+    const isRed = d?.redCard === true || /red card/i.test(String(d?.type?.text ?? ''));
+    const id = d?.team?.id;
+    if (!isRed || id == null) continue;
+    const key = String(id);
+    if (key === String(h.team?.id)) hr++;
+    else if (key === String(a.team?.id)) ar++;
+  }
+  return [hr, ar];
+}
+
+function parse(data: unknown): LiveMatch[] {
+  const out: LiveMatch[] = [];
+  for (const raw of arr((data as { events?: unknown } | null)?.events)) {
+    try {
+      const ev = raw as Ev;
+      const s = ev?.status?.type?.state;
+      if (s !== 'pre' && s !== 'in' && s !== 'post') continue;
+      const state = s as LiveMatch['state'];
+      const comp = arr(ev.competitions)[0] as Comp | undefined;
+      const sides = arr(comp?.competitors) as Side[];
+      const h = sides.find((x) => x?.homeAway === 'home');
+      const a = sides.find((x) => x?.homeAway === 'away');
+      const home = str(h?.team?.displayName);
+      const away = str(a?.team?.displayName);
+      if (!comp || !h || !a || !home || !away) continue;
+      const [homeReds, awayReds] = redsOf(comp, h, a);
+      out.push({ home, away, state, minute: minuteOf(ev), homeGoals: Number(h.score) || 0, awayGoals: Number(a.score) || 0, homeReds, awayReds });
+    } catch {
+      // skip a malformed event
+    }
+  }
+  return out;
+}
+
+async function fetchScoreboard(slug: string): Promise<unknown> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);
+  try {
+    const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard`, { signal: ctl.signal, cache: 'no-store' });
+    if (!res.ok) throw new Error(`ESPN ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function fetchLive(competitionId: string, includeAll?: boolean): Promise<LiveMatch[]> {
+  const slug = Object.prototype.hasOwnProperty.call(SLUGS, competitionId) ? SLUGS[competitionId] : '';
+  if (!slug) return [];
+  try {
+    const data = await getOrSet<unknown>('espn:' + slug, 20000, () => fetchScoreboard(slug));
+    return parse(data).filter((m) => includeAll || m.state === 'in');
+  } catch {
+    return [];
+  }
+}

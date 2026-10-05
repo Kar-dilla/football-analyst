@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { loadSettings } from '@/lib/settings';
+import type { LiveMatch } from '@/lib/livefeed';
 
 interface LivePick { label: string; group: string; probability: number; fairOdds: number }
 interface LiveResult { top: LivePick[]; mine: LivePick | null; basis: string; note: string }
@@ -73,9 +74,39 @@ export default function LivePage() {
   const [err, setErr] = useState('');
   const [res, setRes] = useState<LiveResult | null>(null);
   const [at, setAt] = useState('');
+  const [feed, setFeed] = useState<{ comp: string; list: LiveMatch[]; msg: string } | null>(null);
+  const [feedBusy, setFeedBusy] = useState(false);
+  const [redNote, setRedNote] = useState(false);
 
   useEffect(() => { setMaxPct(String(loadSettings().maxPct)); }, []);
   const upd = (k: Key) => (v: string) => setF((s) => ({ ...s, [k]: v }));
+
+  async function loadFeed() {
+    setFeedBusy(true);
+    setRedNote(false);
+    let next = { comp: league, list: [] as LiveMatch[], msg: 'Could not reach the live feed. Type the details instead.' };
+    try {
+      const d = await (await fetch(`/api/livefeed?comp=${encodeURIComponent(league)}`)).json();
+      if (Array.isArray(d?.matches)) next = { comp: league, list: d.matches, msg: String(d.note || '') };
+    } catch {}
+    setFeed(next);
+    setFeedBusy(false);
+  }
+
+  function pickMatch(m: LiveMatch) {
+    const c = (n: number, hi: number) => String(clamp(String(n), 0, hi));
+    setMatch(`${m.home} vs ${m.away}`);
+    setF((s) => ({
+      ...s,
+      ...(m.minute !== null ? { minute: String(m.minute) } : {}),
+      hg: c(m.homeGoals, 20),
+      ag: c(m.awayGoals, 20),
+      ...(m.homeReds !== null ? { hr: c(m.homeReds, 4) } : {}),
+      ...(m.awayReds !== null ? { ar: c(m.awayReds, 4) } : {}),
+    }));
+    setRedNote(m.homeReds === null || m.awayReds === null);
+    setFeed(null);
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -130,6 +161,14 @@ export default function LivePage() {
             {comps.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
+        <button type="button" className="btn" disabled={!league || feedBusy} onClick={loadFeed}>{feedBusy ? 'Loading…' : 'Fill from live feed'}</button>
+        {feed && feed.comp === league && feed.list.map((m, i) => (
+          <button key={`${m.home}|${m.away}|${i}`} type="button" className="btn" onClick={() => pickMatch(m)}>
+            {`${m.home} vs ${m.away}  ·  ${m.minute ?? '?'}'  ·  ${m.homeGoals}-${m.awayGoals}`}
+          </button>
+        ))}
+        {feed && feed.comp === league && feed.list.length === 0 && feed.msg && <div className="muted">{feed.msg}</div>}
+        {redNote && <div className="muted">{"Red cards aren't in the feed for this match. Check and enter them yourself."}</div>}
         <Field label="Match">
           <input className="input" type="text" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} />
         </Field>
