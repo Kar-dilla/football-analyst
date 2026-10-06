@@ -68,4 +68,5 @@ export interface Analysis {
 export interface Pick {
   id: string; analysis: Analysis; threshold: number;
   usedGapFill: boolean; odds?: number; result?: 'won'|'lost'|'void';
+  settledAt?: string;
 }
