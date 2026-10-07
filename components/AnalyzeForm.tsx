@@ -1,16 +1,24 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import type { Analysis } from '@/lib/types';
 
-export default function AnalyzeForm(props: { onResult: (analysis: Analysis, threshold: number, raw: string, competitionId: string) => void }) {
+export default function AnalyzeForm(props: { onResult: (analysis: Analysis, threshold: number, raw: string, competitionId: string) => void; resetKey?: number }) {
   const [competitionId, setCompetitionId] = useState('');
   const [raw, setRaw] = useState('');
   const [percent, setPercent] = useState('85');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const lastKey = useRef(props.resetKey);
   const competitions = allCompetitions();
+
+  useEffect(() => {
+    if (lastKey.current === props.resetKey) return;
+    lastKey.current = props.resetKey;
+    setRaw('');
+    setError('');
+  }, [props.resetKey]);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -84,7 +92,7 @@ export default function AnalyzeForm(props: { onResult: (analysis: Analysis, thre
         />
       </div>
       <button className="btn" type="submit" disabled={loading}>
-        {loading ? 'Analyzing…' : 'Analyze'}
+        {loading ? 'Analyzing\u2026' : 'Analyze'}
       </button>
       {error && (
         <p role="alert" style={{ color: '#ff6b6b', margin: 0 }}>

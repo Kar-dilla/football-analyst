@@ -2,6 +2,7 @@ import './globals.css';
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { AppProvider } from '@/components/AppProvider';
+import ResultSheet from '@/components/ResultSheet';
 import TabBar from '@/components/TabBar';
 
 export const metadata: Metadata = { title: 'Football Analyst' };
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <AppProvider>
           <div style={{ paddingBottom: 84 }}>{children}</div>
+          <ResultSheet />
           <TabBar />
         </AppProvider>
       </body>
