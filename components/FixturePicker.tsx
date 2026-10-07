@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Segmented, Skeleton } from '@/components/ui';
 
 interface Fx { home: string; away: string; kickoff: string }
 type Day = 'today' | 'tomorrow';
 
 const FAIL = 'Could not load games. Type the match instead.';
-const DAYS: [Day, string][] = [['today', 'Today'], ['tomorrow', 'Tomorrow']];
+const DAYS: { value: Day; label: string }[] = [{ value: 'today', label: 'Today' }, { value: 'tomorrow', label: 'Tomorrow' }];
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const ROW = { width: '100%', minHeight: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '8px 4px', color: 'var(--text)', font: 'inherit', textAlign: 'left', cursor: 'pointer' } as const;
 
 export default function FixturePicker({ competitionId, onPick }: { competitionId: string; onPick: (home: string, away: string) => void }) {
   const [day, setDay] = useState<Day>('today');
@@ -45,19 +47,20 @@ export default function FixturePicker({ competitionId, onPick }: { competitionId
   const shown = all ? list : list.slice(0, 8);
   return (
     <div className="stack">
-      <div className="row">
-        {DAYS.map(([d, label]) => (
-          <button key={d} type="button" className="btn" aria-pressed={day === d} style={{ opacity: day === d ? 1 : 0.55 }} onClick={() => setDay(d)}>{label}</button>
-        ))}
-      </div>
-      {loading && <div className="muted">Loading games…</div>}
+      <div><Segmented<Day> ariaLabel="Day" options={DAYS} value={day} onChange={setDay} /></div>
+      {loading && <Skeleton lines={3} />}
       {!loading && note && <div className="muted">{note}</div>}
-      {shown.map((f) => (
-        <button key={`${f.kickoff}|${f.home}|${f.away}`} type="button" className="btn" onClick={() => onPick(f.home, f.away)}>
-          {f.home} vs {f.away} · {hhmm(f.kickoff)}
-        </button>
-      ))}
-      {!all && list.length > 8 && <button type="button" className="btn" onClick={() => setAll(true)}>Show more</button>}
+      {shown.length > 0 && (
+        <div>
+          {shown.map((f) => (
+            <button key={`${f.kickoff}|${f.home}|${f.away}`} type="button" className="card flat" style={ROW} onClick={() => onPick(f.home, f.away)}>
+              <span style={{ minWidth: 0, overflowWrap: 'anywhere', fontWeight: 600 }}>{f.home} vs {f.away}</span>
+              <span className="num muted">{hhmm(f.kickoff)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {!all && list.length > 8 && <button type="button" className="btn ghost block" onClick={() => setAll(true)}>Show more</button>}
     </div>
   );
 }

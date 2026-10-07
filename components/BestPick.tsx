@@ -5,12 +5,16 @@ import { allCompetitions } from '@/lib/registry';
 import { DEFAULT_ALLOWED, loadSettings, saveSettings } from '@/lib/settings';
 import type { AllowedLines, BestResult, MenuItem } from '@/lib/best';
 import FixturePicker from '@/components/FixturePicker';
+import OddsCheck from '@/components/OddsCheck';
+import { Accordion, EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
 type G = keyof AllowedLines;
 type F = keyof AllowedLines['goals'];
-const NAMES: Record<G, string> = { goals: 'Goals', firsthalf: 'First half', secondhalf: 'Second half', corners: 'Corners', cards: 'Cards' };
-const FIELDS: [F, string][] = [['overMin', 'over from'], ['overMax', 'over to'], ['underMin', 'under from'], ['underMax', 'under to']];
-const SMALL = { width: '4.5rem' };
+const GROUPS: [G, string][] = [['goals', 'Goals'], ['firsthalf', '1st half goals'], ['secondhalf', '2nd half goals'], ['corners', 'Corners'], ['cards', 'Cards']];
+const FIELDS: [F, string][] = [['overMin', 'Over from'], ['overMax', 'Over to'], ['underMin', 'Under from'], ['underMax', 'Under to']];
+const LEAGUE_KEY = 'fa_league_v1';
+const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 } as const;
+const SPLIT = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } as const;
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 export default function BestPick({ onAnalyze, onAdd }: {
@@ -20,26 +24,32 @@ export default function BestPick({ onAnalyze, onAdd }: {
   const [comp, setComp] = useState('');
   const [match, setMatch] = useState('');
   const [mine, setMine] = useState('');
-  const [open, setOpen] = useState(false);
   const [allowed, setAllowed] = useState<AllowedLines>(DEFAULT_ALLOWED);
   const [maxPct, setMaxPct] = useState(100);
+  const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [res, setRes] = useState<BestResult | null>(null);
   const [used, setUsed] = useState({ match: '', comp: '' });
 
-  useEffect(() => { const s = loadSettings(); setAllowed(s.allowed); setMaxPct(s.maxPct); }, []);
+  useEffect(() => {
+    const s = loadSettings(); setAllowed(s.allowed); setMaxPct(s.maxPct); setReady(true);
+    try {
+      const v = window.localStorage.getItem(LEAGUE_KEY) ?? '';
+      if (v && allCompetitions().some((c) => c.id === v)) setComp(v);
+    } catch { /* storage unavailable */ }
+  }, []);
 
+  function chooseLeague(id: string) {
+    setComp(id);
+    try { window.localStorage.setItem(LEAGUE_KEY, id); } catch { /* storage unavailable */ }
+  }
   function persist(a: AllowedLines, m: number) {
     setAllowed(a); setMaxPct(m); saveSettings({ allowed: a, maxPct: m });
   }
   function editLine(g: G, f: F, v: string) {
     const n = parseFloat(v);
     if (Number.isFinite(n)) persist({ ...allowed, [g]: { ...allowed[g], [f]: n } }, maxPct);
-  }
-  function editMax(v: string) {
-    const n = parseFloat(v);
-    if (Number.isFinite(n)) persist(allowed, Math.min(100, Math.max(50, n)));
   }
 
   async function find() {
@@ -60,57 +70,76 @@ export default function BestPick({ onAnalyze, onAdd }: {
 
   const card = (it: MenuItem, own: boolean) => (
     <div key={`${own}|${it.group}|${it.label}`} className="card stack">
-      {own ? <h3>Your bet</h3> : null}
-      {own ? <strong>{it.label}</strong> : <h3>{it.label}</h3>}
-      <div>{pct(it.probability)} {own ? null : <span className="chip">{it.group}</span>} · Fair odds {it.fairOdds.toFixed(2)}</div>
-      {!own && it.shift !== 0 && (
-        <div className="muted">Stats {pct(it.modelProbability)} → news adjusted {pct(it.probability)}{it.note ? ` — ${it.note}` : ''}</div>
-      )}
+      {own && <div className="eyebrow">Your bet</div>}
+      <div style={SPLIT}>
+        <span className="h2" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{it.label}</span>
+        <span className="num" style={{ fontSize: 30, fontWeight: 700 }}>{pct(it.probability)}</span>
+      </div>
       <div className="row">
-        <button className="btn" onClick={() => onAnalyze(it, used.comp)}>Analyze</button>
-        <button className="btn" onClick={() => onAdd(it, used.match)}>Add to slip</button>
+        {!own && <span className="chip">{it.group}</span>}
+        <span className="label">Fair odds <span className="num">{it.fairOdds.toFixed(2)}</span></span>
+      </div>
+      <div className="meter" role="img" aria-label={`Probability ${pct(it.probability)}`}>
+        <i style={{ width: `${Math.min(100, Math.max(0, it.probability * 100))}%` }} />
+      </div>
+      {!own && it.shift !== 0 && (
+        <div className="muted">Stats {pct(it.modelProbability)} → after news {pct(it.probability)}{it.note ? ` — ${it.note}` : ''}</div>
+      )}
+      <OddsCheck fairOdds={it.fairOdds} />
+      <div className="row" style={{ flexWrap: 'nowrap' }}>
+        <button type="button" className="btn secondary" style={{ flex: 1 }} onClick={() => onAnalyze(it, used.comp)}>Analyze</button>
+        <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onAdd(it, used.match)}>Add to slip</button>
       </div>
     </div>
   );
 
   return (
-    <section className="card stack">
-      <select className="input" value={comp} onChange={(e) => setComp(e.target.value)}>
-        <option value="" disabled>Choose league</option>
-        {allCompetitions().map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
-      <FixturePicker competitionId={comp} onPick={(h, a) => setMatch(h + ' vs ' + a)} />
-      <label className="stack"><span className="muted">Match</span><input className="input" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} /></label>
-      <label className="stack"><span className="muted">My bet (optional)</span><input className="input" placeholder="under 11.5 corners" value={mine} onChange={(e) => setMine(e.target.value)} /></label>
-      <button className="btn" onClick={() => setOpen(!open)}>Lines my bookmaker offers {open ? '▴' : '▾'}</button>
-      {open && (
-        <div className="stack">
-          {(Object.keys(NAMES) as G[]).map((g) => (
-            <div key={g} className="row">
-              <strong>{NAMES[g]}</strong>
-              {FIELDS.map(([f, name]) => (
-                <label key={f}><span className="muted">{name}</span>
-                  <input className="input" style={SMALL} type="number" step={0.5} defaultValue={allowed[g][f]} onChange={(e) => editLine(g, f, e.target.value)} />
-                </label>
+    <div>
+      <PageHeader eyebrow="Matchday" title="Best picks" subtitle="The top 3 bets for one match, from team stats." />
+      <div className="stack">
+        <div className="card stack">
+          <Field label="League">
+            <select className="input" value={comp} onChange={(e) => chooseLeague(e.target.value)}>
+              <option value="" disabled>Choose league</option>
+              {allCompetitions().map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+          <FixturePicker competitionId={comp} onPick={(h, a) => setMatch(h + ' vs ' + a)} />
+          <Field label="Match"><input className="input" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} /></Field>
+          <Field label="My bet (optional)" hint="Type it like: under 11.5 corners">
+            <input className="input" placeholder="under 11.5 corners" value={mine} onChange={(e) => setMine(e.target.value)} />
+          </Field>
+          <Accordion title="Lines my bookmaker offers">
+            <div className="stack">
+              {GROUPS.map(([g, title]) => (
+                <div key={g} className="stack" style={{ gap: 8 }}>
+                  <div className="eyebrow" style={{ color: 'var(--muted)' }}>{title}</div>
+                  <div style={GRID2}>
+                    {FIELDS.map(([f, name]) => (
+                      <Field key={f} label={name}>
+                        <input key={String(ready)} className="input" type="number" inputMode="decimal" step={0.5} min={0} max={20} defaultValue={allowed[g][f]} onChange={(e) => editLine(g, f, e.target.value)} />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
               ))}
+              <Stepper label="Ignore picks above (%)" min={50} max={100} value={maxPct} onChange={(n) => persist(allowed, n)} />
             </div>
-          ))}
-          <label className="stack"><span className="muted">Ignore picks above (%)</span>
-            <input className="input" type="number" min={50} max={100} step={1} defaultValue={maxPct} onChange={(e) => editMax(e.target.value)} onBlur={(e) => { e.target.value = String(maxPct); }} />
-          </label>
+          </Accordion>
+          <button type="button" className="btn block" onClick={find} disabled={busy}>{busy ? 'Finding…' : 'Find best picks'}</button>
         </div>
-      )}
-      <button className="btn" onClick={find} disabled={busy}>{busy ? 'Finding…' : 'Find best picks'}</button>
-      {err && <div className="badge warn">{err}</div>}
-      {res && (res.top.length === 0 ? <div className="muted">{res.note}</div> : (
-        <div className="stack">
-          <div className="muted">{res.basis}</div>
-          {res.mine && card(res.mine, true)}
-          <h3>Top picks</h3>
-          {res.top.slice(0, 3).map((it) => card(it, false))}
-          <div className="muted">{res.note}</div>
-        </div>
-      ))}
-    </section>
+
+        {err && <Notice tone="bad">{err}</Notice>}
+        {busy && <div className="card"><Skeleton lines={4} height={18} /></div>}
+        {res && (res.top.length === 0 ? <EmptyState title="No pick reaches 55%" body={res.note} /> : (
+          <>
+            <div className="muted">{res.basis}</div>
+            {res.mine && card(res.mine, true)}
+            <Section title="Top picks">{res.top.slice(0, 3).map((it) => card(it, false))}</Section>
+            <div className="muted">{res.note}</div>
+          </>
+        ))}
+      </div>
+    </div>
   );
 }
