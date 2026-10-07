@@ -1,6 +1,7 @@
 import { getOrSet } from '@/lib/cache';
 
 export interface LiveMatch { home: string; away: string; state: 'pre' | 'in' | 'post'; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null }
+export interface Fixture { home: string; away: string; kickoff: string }
 
 // Loose shape of ESPN's unofficial JSON: every field is optional and re-checked at runtime.
 interface Team { id?: unknown; displayName?: unknown }
@@ -67,11 +68,11 @@ function parse(data: unknown): LiveMatch[] {
   return out;
 }
 
-async function fetchScoreboard(slug: string): Promise<unknown> {
+async function fetchScoreboard(slug: string, date?: string): Promise<unknown> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 6000);
   try {
-    const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard`, { signal: ctl.signal, cache: 'no-store' });
+    const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard${date ? `?dates=${date}` : ''}`, { signal: ctl.signal, cache: 'no-store' });
     if (!res.ok) throw new Error(`ESPN ${res.status}`);
     return await res.json();
   } finally {
@@ -88,4 +89,58 @@ export async function fetchLive(competitionId: string, includeAll?: boolean): Pr
   } catch {
     return [];
   }
+}
+
+export function espnSlug(competitionId: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(SLUGS, competitionId) ? SLUGS[competitionId] : undefined;
+}
+
+const ymd = (ms: number): string => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
+
+function parseFixtures(data: unknown, from: number, to: number, seen: Set<string>): Fixture[] {
+  const out: Fixture[] = [];
+  for (const raw of arr((data as { events?: unknown } | null)?.events)) {
+    try {
+      const ev = raw as Ev & { id?: unknown; date?: unknown };
+      const st = ev?.status?.type as { state?: unknown; description?: unknown; name?: unknown } | undefined;
+      if (st?.state !== 'pre') continue;
+      if (/postpon|cancel|suspend|abandon/i.test(`${str(st.description)} ${str(st.name)}`)) continue;
+      const t = Date.parse(str(ev.date));
+      if (!Number.isFinite(t) || t < from || t >= to) continue;
+      const sides = arr((arr(ev.competitions)[0] as Comp | undefined)?.competitors) as Side[];
+      const home = str(sides.find((x) => x?.homeAway === 'home')?.team?.displayName);
+      const away = str(sides.find((x) => x?.homeAway === 'away')?.team?.displayName);
+      if (!home || !away) continue;
+      const key = ev.id != null && ev.id !== '' ? String(ev.id) : `${home}|${away}|${t}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ home, away, kickoff: new Date(t).toISOString() });
+    } catch {
+      // skip a malformed event
+    }
+  }
+  return out;
+}
+
+export async function fetchFixtures(competitionId: string, day: 'today' | 'tomorrow', tzOffsetMinutes: number): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> {
+  const slug = espnSlug(competitionId);
+  if (!slug) return { fixtures: [], datesSupported: false };
+  const tz = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : 0;
+  const start = Math.floor((Date.now() + tz * 60000) / 86400000) * 86400000 - tz * 60000 + (day === 'tomorrow' ? 86400000 : 0);
+  const end = start + 86400000;
+  const dates = Array.from(new Set([start - 86400000, start, end].map(ymd)));
+  const got = await Promise.all(dates.map(async (d) => {
+    try { return { data: await getOrSet<unknown>(`espn:${slug}:${d}`, 60000, () => fetchScoreboard(slug, d)) }; } catch { return null; }
+  }));
+  const done = got.filter((g): g is { data: unknown } => g !== null);
+  let sources = done.map((g) => g.data);
+  let datesSupported = true;
+  if (!done.length) {
+    if (day === 'tomorrow') return { fixtures: [], datesSupported: false };
+    datesSupported = false;
+    try { sources = [await getOrSet<unknown>('espn:' + slug, 20000, () => fetchScoreboard(slug))]; } catch { sources = []; }
+  }
+  const seen = new Set<string>();
+  const fixtures = sources.flatMap((d) => parseFixtures(d, start, end, seen)).sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff));
+  return { fixtures, datesSupported };
 }

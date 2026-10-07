@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import type { Analysis } from '@/lib/types';
+import FixturePicker from '@/components/FixturePicker';
 
 export default function AnalyzeForm(props: { onResult: (analysis: Analysis, threshold: number, raw: string, competitionId: string) => void; resetKey?: number }) {
   const [competitionId, setCompetitionId] = useState('');
@@ -11,6 +12,7 @@ export default function AnalyzeForm(props: { onResult: (analysis: Analysis, thre
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const lastKey = useRef(props.resetKey);
+  const inputRef = useRef<HTMLInputElement>(null);
   const competitions = allCompetitions();
 
   useEffect(() => {
@@ -19,6 +21,13 @@ export default function AnalyzeForm(props: { onResult: (analysis: Analysis, thre
     setRaw('');
     setError('');
   }, [props.resetKey]);
+
+  function pick(home: string, away: string) {
+    const v = `${home} vs ${away} `;
+    setRaw(v);
+    inputRef.current?.focus();
+    setTimeout(() => inputRef.current?.setSelectionRange(v.length, v.length), 0);
+  }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -67,7 +76,9 @@ export default function AnalyzeForm(props: { onResult: (analysis: Analysis, thre
           </option>
         ))}
       </select>
+      <FixturePicker competitionId={competitionId} onPick={pick} />
       <input
+        ref={inputRef}
         className="input"
         type="text"
         aria-label="Query"

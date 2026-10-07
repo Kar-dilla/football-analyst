@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { DEFAULT_ALLOWED, loadSettings, saveSettings } from '@/lib/settings';
 import type { AllowedLines, BestResult, MenuItem } from '@/lib/best';
+import FixturePicker from '@/components/FixturePicker';
 
 type G = keyof AllowedLines;
 type F = keyof AllowedLines['goals'];
@@ -78,6 +79,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
         <option value="" disabled>Choose league</option>
         {allCompetitions().map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
+      <FixturePicker competitionId={comp} onPick={(h, a) => setMatch(h + ' vs ' + a)} />
       <label className="stack"><span className="muted">Match</span><input className="input" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} /></label>
       <label className="stack"><span className="muted">My bet (optional)</span><input className="input" placeholder="under 11.5 corners" value={mine} onChange={(e) => setMine(e.target.value)} /></label>
       <button className="btn" onClick={() => setOpen(!open)}>Lines my bookmaker offers {open ? '▴' : '▾'}</button>
