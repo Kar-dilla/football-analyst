@@ -4,13 +4,27 @@ import { useState } from 'react';
 import type { Pick } from '@/lib/types';
 import { removePick, updatePick } from '@/lib/store';
 import { useApp } from '@/components/AppProvider';
+import { getCompetition } from '@/lib/registry';
+import { betLabel } from '@/lib/label';
+import Shortlist from '@/components/Shortlist';
+import { Accordion, EmptyState, Field } from '@/components/ui';
 
+type Result = 'won' | 'lost' | 'void';
+const RESULTS: [Result, string, string | undefined][] = [['won', 'Won', 'var(--ok)'], ['lost', 'Lost', 'var(--bad)'], ['void', 'Void', undefined]];
+const SPLIT = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } as const;
 const pct = (x: number) => `${Math.round(x * 100)}%`;
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const sep = { paddingTop: 8, borderTop: '1px solid rgba(128,128,128,0.3)' } as const;
+const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
-function OddsInput(props: { pick: Pick; onSaved: () => void }) {
-  const { pick, onSaved } = props;
+function age(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const diff = Math.round((day(new Date()) - day(d)) / 86400000);
+  if (diff === 0) return 'Today ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (diff === 1) return 'Yesterday';
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function OddsInput({ pick, onSaved }: { pick: Pick; onSaved: () => void }) {
   const saved = pick.odds !== undefined ? String(pick.odds) : '';
   const [text, setText] = useState(saved);
   const save = () => {
@@ -21,16 +35,28 @@ function OddsInput(props: { pick: Pick; onSaved: () => void }) {
       setText(saved);
     }
   };
-  return <input className="input" type="number" step="0.01" min="1.01" placeholder="Odds" value={text} onChange={(e) => setText(e.target.value)} onBlur={save} />;
+  const p = pick.analysis.probability;
+  const fair = p > 0 ? Math.round(100 / p) / 100 : 0;
+  const o = pick.odds;
+  const diff = o !== undefined && fair > 0 ? o / fair - 1 : null;
+  return (
+    <div>
+      <Field label="Odds you took">
+        <input className="input" type="number" inputMode="decimal" step="0.01" min="1.01" placeholder="e.g. 1.25" value={text} onChange={(e) => setText(e.target.value)} onBlur={save} />
+      </Field>
+      {o !== undefined && diff !== null && (
+        <div className="label" style={{ marginTop: 6 }}>Fair {fair.toFixed(2)} · you {o.toFixed(2)} ({diff >= 0 ? '+' : '−'}{Math.abs(diff * 100).toFixed(1)}% vs fair)</div>
+      )}
+    </div>
+  );
 }
 
-export default function OpenPicks(props: { picks: Pick[]; onChange: () => void }) {
-  const { picks, onChange } = props;
+export default function OpenPicks({ picks, onChange }: { picks: Pick[]; onChange: () => void }) {
   const { notify } = useApp();
   const open = picks
     .filter((p) => p.result === undefined)
     .sort((a, b) => b.analysis.createdAt.localeCompare(a.analysis.createdAt));
-  const settle = (p: Pick, result: 'won' | 'lost' | 'void') => {
+  const settle = (p: Pick, result: Result) => {
     updatePick(p.id, { result, settledAt: new Date().toISOString() });
     onChange();
     notify('Marked ' + result, () => {
@@ -43,26 +69,34 @@ export default function OpenPicks(props: { picks: Pick[]; onChange: () => void }
     removePick(p.id);
     onChange();
   };
-  if (open.length === 0) return <p className="muted">No open picks. Save a pick from an analysis to track it here.</p>;
+  if (open.length === 0) return <EmptyState title="No open picks" body="Save a pick from an analysis and it shows up here until you mark the result." />;
   return (
     <div className="stack">
-      {open.map((p) => (
-        <div className="stack" key={p.id} style={sep}>
-          <div className="row">
-            <strong>{p.analysis.query.raw}</strong>
-            <span className="chip">{pct(p.analysis.probability)}</span>
-          </div>
-          <div className="row">
+      {open.length >= 2 && <Accordion title="Highest probability first"><Shortlist picks={picks} /></Accordion>}
+      {open.map((p) => {
+        const a = p.analysis;
+        const league = getCompetition(a.query.competitionId ?? '')?.name;
+        return (
+          <div key={p.id} className="card stack">
+            <div style={SPLIT}>
+              <span className="h2" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{betLabel(a.query)}</span>
+              <span className="num" style={{ fontSize: 26, fontWeight: 700 }}>{pct(a.probability)}</span>
+            </div>
+            <div className="muted">{a.query.home} vs {a.query.away}{league ? ` · ${league}` : ''}</div>
+            <div className="row">
+              <span className="label">Saved {age(a.createdAt)}</span>
+              {p.usedGapFill && <span className="badge">Used extra info</span>}
+            </div>
             <OddsInput pick={p} onSaved={onChange} />
+            <div className="row" style={{ flexWrap: 'nowrap' }}>
+              {RESULTS.map(([r, label, color]) => (
+                <button key={r} type="button" className="btn secondary" style={{ flex: 1, minWidth: 0, ...(color ? { borderColor: color, color } : {}) }} onClick={() => settle(p, r)}>{label}</button>
+              ))}
+            </div>
+            <div><button type="button" className="btn ghost sm" onClick={() => del(p)}>Delete</button></div>
           </div>
-          <div className="row">
-            {(['won', 'lost', 'void'] as const).map((r) => (
-              <button key={r} className="btn" onClick={() => settle(p, r)}>{cap(r)}</button>
-            ))}
-            <button className="btn" onClick={() => del(p)}>Delete</button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

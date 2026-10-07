@@ -2,78 +2,82 @@
 
 import type { Pick } from '@/lib/types';
 import { computeStats } from '@/lib/stats';
+import { Accordion, EmptyState, Notice, Stat } from '@/components/ui';
 
 type Rate = { n: number; rate: number };
 const pct = (x: number) => `${Math.round(x * 100)}%`;
-const pct1 = (x: number) => `${(x * 100).toFixed(1)}%`;
-const opt = (x: number | null) => (x === null ? '-' : pct1(x));
-const brier = (x: number | null) => (x === null ? '-' : x.toFixed(3));
+const opt = (x: number | null) => (x === null ? '-' : pct(x));
+const b3 = (x: number | null) => (x === null ? '-' : x.toFixed(3));
+const signed = (x: number, digits: number, suffix = '') => `${x >= 0 ? '+' : '−'}${Math.abs(x).toFixed(digits)}${suffix}`;
+const tone = (x: number): 'ok' | 'bad' | undefined => (x > 0 ? 'ok' : x < 0 ? 'bad' : undefined);
+const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 } as const;
+const MARKET: Record<string, string> = { goals_ou: 'Goals', btts: 'Both teams to score', '1x2': 'Result', double_chance: 'Double chance', fh_goals_ou: '1st half goals', sh_goals_ou: '2nd half goals', corners_ou: 'Corners', cards_ou: 'Cards', window_goals: 'Goal window', fh_subs: '1st half sub' };
 
-function RateTable(props: { title: string; rows: Record<string, Rate> }) {
-  const keys = Object.keys(props.rows);
+function Rates({ rows, name }: { rows: Record<string, Rate>; name?: (k: string) => string }) {
   return (
-    <div className="stack">
-      <strong>{props.title}</strong>
-      {keys.length === 0 ? <p className="muted">No settled picks yet.</p> : (
-        <table className="table">
-          <thead><tr><th>Group</th><th>Settled</th><th>Hit rate</th></tr></thead>
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k}><td>{k}</td><td>{props.rows[k].n}</td><td>{props.rows[k].n ? pct(props.rows[k].rate) : '-'}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <div style={{ overflowX: 'auto' }}>
+      <table className="table">
+        <thead><tr><th>Group</th><th>Settled</th><th>Hit rate</th></tr></thead>
+        <tbody>
+          {Object.keys(rows).map((k) => (
+            <tr key={k}><td>{name ? name(k) : k}</td><td className="num">{rows[k].n}</td><td className="num">{rows[k].n ? pct(rows[k].rate) : '-'}</td></tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-export default function StatsView(props: { picks: Pick[] }) {
-  const s = computeStats(props.picks);
-  const won = props.picks.filter((p) => p.result === 'won').length;
-  const hit = s.settled ? won / s.settled : null;
+export default function StatsView({ picks }: { picks: Pick[] }) {
+  const s = computeStats(picks);
+  if (s.settled === 0) return <EmptyState title="No results yet" body="Stats appear after you mark picks Won or Lost." />;
+  const won = picks.filter((p) => p.result === 'won').length;
+  const lost = picks.filter((p) => p.result === 'lost').length;
   const r = s.roi;
   return (
     <div className="stack">
-      {s.early && <div className="badge warn">Small sample. Only {s.settled} picks so far; this is mostly luck at this size.</div>}
-      <div className="stack">
-        <strong>Overview</strong>
-        <span>Settled: {s.settled}</span>
-        <span>Won: {won}</span>
-        <span>Hit rate: {opt(hit)}</span>
-        <span>Average predicted (adjusted): {opt(s.avgPredicted)}</span>
-        <span>Average predicted (stats only): {opt(s.avgBase)}</span>
-        <span>Brier score (adjusted): {brier(s.brier)}</span>
-        <span>Brier score (stats only): {brier(s.brierBase)}</span>
-        <span>Last 20 hit rate: {s.last20.n ? pct1(s.last20.rate) : '-'} ({s.last20.n} picks)</span>
+      {s.early && <Notice tone="warn">Only {s.settled} settled picks so far. At this size the numbers are mostly luck.</Notice>}
+      <div className="card" style={GRID2}>
+        <Stat label="Settled" value={String(s.settled)} />
+        <Stat label="Hit rate" value={pct(won / s.settled)} sub={`${won} won, ${lost} lost`} />
+        <Stat label="Last 20 picks" value={pct(s.last20.rate)} sub={`${s.last20.n} picks`} />
+        <Stat label="Average predicted" value={opt(s.avgPredicted)} sub={`Stats only ${opt(s.avgBase)}`} />
+        <Stat label="Brier score" value={b3(s.brier)} sub={`Stats only ${b3(s.brierBase)} · lower is better`} />
       </div>
-      <div className="stack">
-        <strong>Return at entered odds</strong>
-        {r.n === 0 ? <p className="muted">Add odds to your picks to see this</p> : (
+      <div className="card stack">
+        <div className="eyebrow" style={{ color: 'var(--muted)' }}>Return at your odds</div>
+        {r.n > 0 ? (
           <>
-            <span>Picks with odds: {r.n}</span>
-            <span>Units: {(r.units >= 0 ? '+' : '') + r.units.toFixed(2)}</span>
-            <span>Return: {pct1(r.pct)}</span>
-            <span>Average odds: {r.avgOdds.toFixed(2)}</span>
-            <span>Break-even hit rate: {r.breakEven === null ? '-' : pct1(r.breakEven)}</span>
+            <div style={GRID2}>
+              <Stat label="Units" value={signed(r.units, 2)} tone={tone(r.units)} />
+              <Stat label="Return" value={signed(r.pct * 100, 1, '%')} tone={tone(r.pct)} />
+            </div>
+            <div className="label">On {r.n} picks with odds · average odds {r.avgOdds.toFixed(2)} · break-even hit rate {opt(r.breakEven)}</div>
+            <div className="label faint">Only picks where you entered odds count.</div>
           </>
+        ) : (
+          <EmptyState title="No odds yet" body="Add the odds you took on open picks to see your return." />
         )}
       </div>
-      <strong>Reliability buckets</strong>
-      <table className="table">
-        <thead><tr><th>Bucket</th><th>n</th><th>Predicted</th><th>Actual</th></tr></thead>
-        <tbody>
-          {s.buckets.map((b) => (
-            <tr key={b.label} style={b.n < 10 ? { opacity: 0.45 } : undefined}>
-              <td>{b.label}</td><td>{b.n}</td><td>{b.n ? pct(b.predicted) : '-'}</td><td>{b.n ? pct(b.actual) : '-'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="muted">Greyed rows have fewer than 10 picks.</p>
-      <RateTable title="Hit rate by market" rows={s.hitRateByMarket} />
-      <RateTable title="Hit rate by tier" rows={s.hitRateByTier} />
-      <RateTable title="Gap-fill vs not" rows={{ 'With gap-fill': s.gapFill.with, 'Without gap-fill': s.gapFill.without }} />
+      <Accordion title="Reliability: predicted vs actual" defaultOpen>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead><tr><th>Bucket</th><th>n</th><th>Predicted</th><th>Actual</th></tr></thead>
+            <tbody>
+              {s.buckets.map((b) => (
+                <tr key={b.label} style={b.n < 10 ? { color: 'var(--muted)' } : undefined}>
+                  <td>{b.label}</td><td className="num">{b.n}</td>
+                  <td className="num">{b.n ? pct(b.predicted) : '-'}</td><td className="num">{b.n ? pct(b.actual) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="label" style={{ marginTop: 8 }}>Predicted and actual should be close. Small buckets are noise.</div>
+      </Accordion>
+      <Accordion title="By market"><Rates rows={s.hitRateByMarket} name={(k) => MARKET[k] ?? k} /></Accordion>
+      <Accordion title="By data tier"><Rates rows={s.hitRateByTier} name={(k) => 'Tier ' + k} /></Accordion>
+      <Accordion title="With and without extra info"><Rates rows={{ 'With extra info': s.gapFill.with, 'Without extra info': s.gapFill.without }} /></Accordion>
     </div>
   );
 }
