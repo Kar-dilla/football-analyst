@@ -176,14 +176,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }
 
   const value: AppState = { analysis, threshold, raw, competitionId, usedGapFill, analyzeError, picks, slip, setResult, rerun, analyzeItem, refreshPicks, addLeg, removeLeg, clearSlip, savePickNow, addAnalysisToSlip, notify, analysisSession, sheetOpen, formResetKey, openSheet, closeSheet, clearAnalysis, finishSave, finishSlip, finishBoth };
-  const bar = { position: 'fixed', left: 12, right: 12, bottom: 'calc(68px + env(safe-area-inset-bottom))', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } as const;
   return (
     <Ctx.Provider value={value}>
       {children}
       {toast && (
-        <div className="card" role="status" style={bar}>
+        <div className="toast" role="status">
           <span>{toast.message}</span>
-          {toast.undo && <button className="btn" onClick={() => { toast.undo?.(); setToast(null); }}>Undo</button>}
+          {toast.undo && <button className="btn ghost sm" onClick={() => { toast.undo?.(); setToast(null); }}>Undo</button>}
         </div>
       )}
     </Ctx.Provider>
