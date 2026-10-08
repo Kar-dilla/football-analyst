@@ -1,13 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
+import type { TeamLive } from '@/lib/livefeed';
 import { allCompetitions } from '@/lib/registry';
 import { loadSettings } from '@/lib/settings';
 import { useApp } from '@/components/AppProvider';
+import LiveStats from '@/components/LiveStats';
 import OddsCheck from '@/components/OddsCheck';
 import { EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
-interface FeedMatch { home: string; away: string; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null }
+type FeedStats = { home: TeamLive; away: TeamLive };
+interface FeedMatch { home: string; away: string; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null; stats?: FeedStats | null }
 interface LivePick { label: string; group: string; probability: number; fairOdds: number }
 interface LiveResult { top: LivePick[]; mine: LivePick | null; basis: string; note: string }
 
@@ -36,6 +39,9 @@ export default function LivePage() {
   const [feed, setFeed] = useState<{ comp: string; list: FeedMatch[]; msg: string; failed: boolean } | null>(null);
   const [feedBusy, setFeedBusy] = useState(false);
   const [redNote, setRedNote] = useState(false);
+  const [picked, setPicked] = useState<{ home: string; away: string; stats: FeedStats; at: string } | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
 
   useEffect(() => {
     setMaxPct(loadSettings().maxPct);
@@ -48,7 +54,13 @@ export default function LivePage() {
   const upd = (k: Key) => (n: number) => setF((s) => ({ ...s, [k]: n }));
   function chooseLeague(id: string) {
     setLeague(id);
+    setPicked(null);
     try { window.localStorage.setItem(LEAGUE_KEY, id); } catch { /* storage unavailable */ }
+  }
+
+  function editMatch(v: string) {
+    setMatch(v);
+    if (picked && v.trim() !== `${picked.home} vs ${picked.away}`) setPicked(null);
   }
 
   async function loadFeed() {
@@ -74,7 +86,23 @@ export default function LivePage() {
       ...(m.awayReds !== null ? { ar: clamp(m.awayReds, 0, 4) } : {}),
     }));
     setRedNote(m.homeReds === null || m.awayReds === null);
+    setPicked(m.stats ? { home: m.home, away: m.away, stats: m.stats, at: new Date().toTimeString().slice(0, 8) } : null);
+    setSyncMsg('');
     setFeed(null);
+  }
+
+  async function refreshFeed() {
+    if (!picked || !league) return;
+    setSyncBusy(true);
+    let list = null as FeedMatch[] | null;
+    try {
+      const d = await (await fetch(`/api/livefeed?comp=${encodeURIComponent(league)}`)).json();
+      if (Array.isArray(d?.matches)) list = d.matches;
+    } catch { /* keep the failed state */ }
+    const m = list?.find((x) => x.home === picked.home && x.away === picked.away);
+    if (m) pickMatch(m);
+    else setSyncMsg(list ? 'This game is no longer in the live list. It may have ended.' : 'Could not reach the live feed. Try again.');
+    setSyncBusy(false);
   }
 
   async function run() {
@@ -154,7 +182,7 @@ export default function LivePage() {
             )}
             {here && !here.failed && here.list.length === 0 && here.msg && <div className="muted">{here.msg}</div>}
             {redNote && <Notice tone="info">Red cards are not in the feed for this match. Check them yourself.</Notice>}
-            <Field label="Match"><input className="input" type="text" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} /></Field>
+            <Field label="Match"><input className="input" type="text" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => editMatch(e.target.value)} /></Field>
           </div>
 
           <Section title="Match state" hint="minute, score, red cards">
@@ -169,6 +197,15 @@ export default function LivePage() {
                 <Stepper label="Away reds" min={0} max={4} value={f.ar} onChange={upd('ar')} />
               </div>
             </div>
+            {picked && (
+              <div className="stack">
+                <LiveStats home={picked.home} away={picked.away} stats={picked.stats} minute={f.minute} fetchedAt={picked.at} />
+                <div className="row">
+                  <button type="button" className="btn secondary sm" onClick={refreshFeed} disabled={syncBusy}>{syncBusy ? 'Loading…' : 'Refresh from feed'}</button>
+                </div>
+                {syncMsg && <Notice tone="warn">{syncMsg}</Notice>}
+              </div>
+            )}
           </Section>
 
           <div className="card stack">

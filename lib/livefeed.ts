@@ -1,12 +1,13 @@
 import { getOrSet } from '@/lib/cache';
 
-export interface LiveMatch { home: string; away: string; state: 'pre' | 'in' | 'post'; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null }
+export interface LiveMatch { home: string; away: string; state: 'pre' | 'in' | 'post'; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null; stats: { home: TeamLive; away: TeamLive } | null }
 export interface Fixture { home: string; away: string; kickoff: string }
+export interface TeamLive { shots: number | null; shotsOnTarget: number | null; corners: number | null; possession: number | null; fouls: number | null; yellows: number | null }   // possession is a percent 0-100
 
 // Loose shape of ESPN's unofficial JSON: every field is optional and re-checked at runtime.
 interface Team { id?: unknown; displayName?: unknown }
-interface Side { homeAway?: unknown; score?: unknown; team?: Team }
-interface Detail { redCard?: unknown; type?: { text?: unknown }; team?: Team }
+interface Side { homeAway?: unknown; score?: unknown; team?: Team; statistics?: unknown }
+interface Detail { redCard?: unknown; yellowCard?: unknown; type?: { text?: unknown }; team?: Team }
 interface Comp { competitors?: unknown; details?: unknown }
 interface Ev { status?: { displayClock?: unknown; type?: { state?: unknown; description?: unknown } }; competitions?: unknown }
 
@@ -20,6 +21,10 @@ const SLUGS: Record<string, string> = {
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+const num = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
 
 function minuteOf(ev: Ev): number | null {
   const t = ev.status?.type;
@@ -44,6 +49,31 @@ function redsOf(comp: Comp, h: Side, a: Side): [number | null, number | null] {
   return [hr, ar];
 }
 
+function teamLive(side: Side, details: unknown): TeamLive {
+  const by = new Map<string, number | null>();
+  for (const s of arr(side.statistics) as { name?: unknown; displayValue?: unknown }[]) {
+    const k = str(s?.name);
+    if (k && !by.has(k)) by.set(k, num(s?.displayValue));
+  }
+  const id = side.team?.id;
+  let yellows: number | null = null;
+  if (Array.isArray(details) && id != null) {
+    yellows = 0;
+    for (const d of details as Detail[]) {
+      const did = d?.team?.id;
+      if (d?.yellowCard === true && did != null && String(did) === String(id)) yellows++;
+    }
+  }
+  return {
+    shots: by.get('totalShots') ?? null,
+    shotsOnTarget: by.get('shotsOnTarget') ?? null,
+    corners: by.get('wonCorners') ?? null,
+    possession: by.get('possessionPct') ?? null,
+    fouls: by.get('foulsCommitted') ?? null,
+    yellows,
+  };
+}
+
 function parse(data: unknown): LiveMatch[] {
   const out: LiveMatch[] = [];
   for (const raw of arr((data as { events?: unknown } | null)?.events)) {
@@ -60,7 +90,8 @@ function parse(data: unknown): LiveMatch[] {
       const away = str(a?.team?.displayName);
       if (!comp || !h || !a || !home || !away) continue;
       const [homeReds, awayReds] = redsOf(comp, h, a);
-      out.push({ home, away, state, minute: minuteOf(ev), homeGoals: Number(h.score) || 0, awayGoals: Number(a.score) || 0, homeReds, awayReds });
+      const stats = Array.isArray(h.statistics) || Array.isArray(a.statistics) ? { home: teamLive(h, comp.details), away: teamLive(a, comp.details) } : null;
+      out.push({ home, away, state, minute: minuteOf(ev), homeGoals: Number(h.score) || 0, awayGoals: Number(a.score) || 0, homeReds, awayReds, stats });
     } catch {
       // skip a malformed event
     }
