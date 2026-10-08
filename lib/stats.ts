@@ -16,6 +16,7 @@ export interface Stats {
   brierBase: number | null;
   last20: Rate;
   roi: { n: number; units: number; pct: number; avgOdds: number; breakEven: number | null };
+  byKind: { prematch: Rate; live: Rate };
 }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
@@ -73,6 +74,10 @@ export function computeStats(picks: Pick[]): Stats {
       pct: priced.length ? units / priced.length : 0,
       avgOdds,
       breakEven: priced.length ? 1 / avgOdds : null,
+    },
+    byKind: {
+      prematch: rateOf(settled.filter((p) => !p.live)),
+      live: rateOf(settled.filter((p) => !!p.live)),
     },
   };
 }

@@ -59,8 +59,9 @@ export default function History({ picks, onChange }: { picks: Pick[]; onChange: 
             <div key={p.id}>
               <button type="button" className="card flat" style={ROW} aria-expanded={openId === p.id} onClick={() => setOpenId(openId === p.id ? '' : p.id)}>
                 <span style={{ minWidth: 0 }}>
-                  <span style={{ display: 'block', fontWeight: 700, overflowWrap: 'anywhere' }}>{betLabel(a.query)}</span>
+                  <span style={{ display: 'block', fontWeight: 700, overflowWrap: 'anywhere' }}>{betLabel(a.query)}{p.live && <span className="badge accent" style={{ marginLeft: 8 }}>Live</span>}</span>
                   <span className="muted" style={{ display: 'block' }}>{a.query.home} vs {a.query.away}</span>
+                  {p.live && <span className="label" style={{ display: 'block' }}>{`Saved at ${p.live.minute}' · ${p.live.homeGoals}-${p.live.awayGoals}`}</span>}
                 </span>
                 <span style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
                   <span className={p.result ? BADGE[p.result] : 'badge'}>{cap(p.result ?? '')}</span>

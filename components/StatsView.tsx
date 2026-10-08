@@ -34,6 +34,7 @@ export default function StatsView({ picks }: { picks: Pick[] }) {
   const won = picks.filter((p) => p.result === 'won').length;
   const lost = picks.filter((p) => p.result === 'lost').length;
   const r = s.roi;
+  const kinds: [string, Rate][] = [['Pre-match', s.byKind.prematch], ['Live', s.byKind.live]];
   return (
     <div className="stack">
       {s.early && <Notice tone="warn">Only {s.settled} settled picks so far. At this size the numbers are mostly luck.</Notice>}
@@ -78,6 +79,19 @@ export default function StatsView({ picks }: { picks: Pick[] }) {
       <Accordion title="By market"><Rates rows={s.hitRateByMarket} name={(k) => MARKET[k] ?? k} /></Accordion>
       <Accordion title="By data tier"><Rates rows={s.hitRateByTier} name={(k) => 'Tier ' + k} /></Accordion>
       <Accordion title="With and without extra info"><Rates rows={{ 'With extra info': s.gapFill.with, 'Without extra info': s.gapFill.without }} /></Accordion>
+      <Accordion title="Pre-match vs live">
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table">
+            <thead><tr><th>Type</th><th>Settled</th><th>Hit rate</th></tr></thead>
+            <tbody>
+              {kinds.map(([k, v]) => (
+                <tr key={k}><td>{k}</td><td className="num">{v.n}</td><td className="num">{v.n ? pct(v.rate) : '-'}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {s.byKind.live.n > 0 && <div className="muted" style={{ marginTop: 8 }}>Live picks are tracked separately because the live model is untested.</div>}
+      </Accordion>
     </div>
   );
 }

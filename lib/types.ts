@@ -69,4 +69,5 @@ export interface Pick {
   id: string; analysis: Analysis; threshold: number;
   usedGapFill: boolean; odds?: number; result?: 'won'|'lost'|'void';
   settledAt?: string;
+  live?: { minute: number; homeGoals: number; awayGoals: number; homeReds: number; awayReds: number; label: string; group: string; fairOdds: number; pressureHome?: number; pressureWeight?: number; stats?: { home: { shots: number | null; shotsOnTarget: number | null; corners: number | null; possession: number | null }; away: { shots: number | null; shotsOnTarget: number | null; corners: number | null; possession: number | null } }; modelVersion: string };   // pressureHome is the home share of pressure from 0 to 100
 }

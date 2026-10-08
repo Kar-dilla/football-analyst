@@ -79,10 +79,14 @@ export default function OpenPicks({ picks, onChange }: { picks: Pick[]; onChange
         return (
           <div key={p.id} className="card stack">
             <div style={SPLIT}>
-              <span className="h2" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{betLabel(a.query)}</span>
+              <span style={{ minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span className="h2" style={{ overflowWrap: 'anywhere' }}>{betLabel(a.query)}</span>
+                {p.live && <span className="badge accent">Live</span>}
+              </span>
               <span className="num" style={{ fontSize: 26, fontWeight: 700 }}>{pct(a.probability)}</span>
             </div>
             <div className="muted">{a.query.home} vs {a.query.away}{league ? ` · ${league}` : ''}</div>
+            {p.live && <div className="label">{`Saved at ${p.live.minute}' · ${p.live.homeGoals}-${p.live.awayGoals}`}</div>}
             <div className="row">
               <span className="label">Saved {age(a.createdAt)}</span>
               {p.usedGapFill && <span className="badge">Used extra info</span>}

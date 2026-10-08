@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from
 import type { TeamLive } from '@/lib/livefeed';
 import { allCompetitions } from '@/lib/registry';
 import { loadSettings } from '@/lib/settings';
+import { loadPicks, savePick } from '@/lib/store';
+import { buildLivePick, parseLiveLabel } from '@/lib/liveLabel';
 import { useApp } from '@/components/AppProvider';
 import LiveStats from '@/components/LiveStats';
 import OddsCheck from '@/components/OddsCheck';
@@ -13,6 +15,8 @@ type FeedStats = { home: TeamLive; away: TeamLive };
 interface FeedMatch { home: string; away: string; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null; stats?: FeedStats | null }
 interface LivePick { label: string; group: string; probability: number; fairOdds: number }
 interface LiveResult { top: LivePick[]; mine: LivePick | null; basis: string; note: string; modelVersion?: string; pressure?: { tilt: number; weight: number; shareHome: number } }
+// The exact values a pricing response was made with. Saving uses these, not the steppers' current values.
+interface Sent { home: string; away: string; comp: string; state: { minute: number; homeGoals: number; awayGoals: number; homeReds: number; awayReds: number }; stats: FeedStats | null; pressure: LiveResult['pressure'] | null; modelVersion?: string }
 
 const LEAGUE_KEY = 'fa_league_v1';
 const MINFAIR_KEY = 'fa_minfair_v1';
@@ -20,13 +24,17 @@ const INIT = { minute: 1, hg: 0, ag: 0, hr: 0, ar: 0 };
 type Key = keyof typeof INIT;
 const clamp = (n: number, lo: number, hi: number) => (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : lo);
 const parseFair = (v: string): number => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(3, Math.max(1.01, n)) : 1.1; };
+const splitMatch = (t: string): [string, string] | null => {
+  const p = t.trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((x) => x.trim());
+  return p.length === 2 && p[0] && p[1] ? [p[0], p[1]] : null;
+};
 const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 } as const;
 const SPLIT = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } as const;
 const ROW = { width: '100%', minHeight: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '8px 4px', color: 'var(--text)', font: 'inherit', textAlign: 'left', cursor: 'pointer' } as const;
 const noEnter = (e: KeyboardEvent<HTMLElement>) => { if (e.key === 'Enter') e.preventDefault(); };
 
 export default function LivePage() {
-  const { addLeg, notify } = useApp();
+  const { addLeg, notify, refreshPicks } = useApp();
   const comps = useMemo(() => allCompetitions(), []);
   const [league, setLeague] = useState('');
   const [match, setMatch] = useState('');
@@ -37,6 +45,7 @@ export default function LivePage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [res, setRes] = useState<LiveResult | null>(null);
+  const [sent, setSent] = useState<Sent | null>(null);
   const [at, setAt] = useState('');
   const [used, setUsed] = useState({ match: '', minute: 1, home: '' });
   const [feed, setFeed] = useState<{ comp: string; list: FeedMatch[]; msg: string; failed: boolean } | null>(null);
@@ -130,7 +139,10 @@ export default function LivePage() {
       const r = await fetch('/api/live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const data = await r.json().catch(() => null);
       if (!r.ok || !data || data.error) throw new Error((data && data.error) || `Request failed (${r.status})`);
-      setRes(data as LiveResult);
+      const out = data as LiveResult;
+      const names = splitMatch(match);
+      setRes(out);
+      setSent(names ? { home: names[0], away: names[1], comp: league, state: st, stats: live ? live.stats : null, pressure: out.pressure ?? null, modelVersion: out.modelVersion } : null);
       setAt(new Date().toTimeString().slice(0, 8));
       setUsed({ match: match.trim(), minute: st.minute, home: live ? live.home : '' });
     } catch (x) {
@@ -143,6 +155,20 @@ export default function LivePage() {
   function add(p: LivePick) {
     const r = addLeg({ id: `${used.match}|${p.label}|live`, match: used.match, label: `${p.label} (live ${used.minute}')`, probability: p.probability });
     notify(r === 'added' ? 'Added to slip' : r === 'duplicate' ? 'Already on the slip' : 'Slip is full (30 legs)');
+  }
+
+  const savable = (p: LivePick) => !!sent && !!parseLiveLabel(p.label, sent.home, sent.away);
+
+  function save(p: LivePick) {
+    if (!sent) return;
+    const pick = buildLivePick({ home: sent.home, away: sent.away, competitionId: sent.comp, label: p.label, group: p.group, probability: p.probability, fairOdds: p.fairOdds, state: sent.state, stats: sent.stats ?? undefined, pressure: sent.pressure, modelVersion: sent.modelVersion });
+    if (!pick) return;
+    const q = pick.analysis.query;
+    const dup = loadPicks().some((x) => x.result === undefined && !!x.live && x.analysis.query.home === q.home && x.analysis.query.away === q.away && x.analysis.query.market === q.market && x.analysis.query.side === q.side && x.analysis.query.line === q.line);
+    if (dup) return notify('Already saved. Check Log > Open.');
+    savePick(pick);
+    refreshPicks();
+    notify('Live pick saved. Find it in Log > Open.');
   }
 
   const card = (p: LivePick, own: boolean) => (
@@ -160,7 +186,10 @@ export default function LivePage() {
         <i style={{ width: `${Math.min(100, Math.max(0, p.probability * 100))}%` }} />
       </div>
       <OddsCheck fairOdds={p.fairOdds} />
-      <button type="button" className="btn block" onClick={() => add(p)}>Add to slip</button>
+      <div className="row" style={{ flexWrap: 'nowrap' }}>
+        <button type="button" className="btn" style={{ flex: 1, minWidth: 0 }} onClick={() => add(p)}>Add to slip</button>
+        {savable(p) && <button type="button" className="btn secondary" style={{ flex: 1, minWidth: 0 }} onClick={() => save(p)}>Save pick</button>}
+      </div>
     </div>
   );
 
