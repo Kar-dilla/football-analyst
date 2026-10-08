@@ -12,12 +12,14 @@ import { EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } fro
 type FeedStats = { home: TeamLive; away: TeamLive };
 interface FeedMatch { home: string; away: string; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null; stats?: FeedStats | null }
 interface LivePick { label: string; group: string; probability: number; fairOdds: number }
-interface LiveResult { top: LivePick[]; mine: LivePick | null; basis: string; note: string }
+interface LiveResult { top: LivePick[]; mine: LivePick | null; basis: string; note: string; modelVersion?: string; pressure?: { tilt: number; weight: number; shareHome: number } }
 
 const LEAGUE_KEY = 'fa_league_v1';
+const MINFAIR_KEY = 'fa_minfair_v1';
 const INIT = { minute: 1, hg: 0, ag: 0, hr: 0, ar: 0 };
 type Key = keyof typeof INIT;
 const clamp = (n: number, lo: number, hi: number) => (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : lo);
+const parseFair = (v: string): number => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(3, Math.max(1.01, n)) : 1.1; };
 const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 } as const;
 const SPLIT = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } as const;
 const ROW = { width: '100%', minHeight: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '8px 4px', color: 'var(--text)', font: 'inherit', textAlign: 'left', cursor: 'pointer' } as const;
@@ -31,11 +33,12 @@ export default function LivePage() {
   const [f, setF] = useState(INIT);
   const [mine, setMine] = useState('');
   const [maxPct, setMaxPct] = useState(100);
+  const [minFair, setMinFair] = useState('1.10');
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [res, setRes] = useState<LiveResult | null>(null);
   const [at, setAt] = useState('');
-  const [used, setUsed] = useState({ match: '', minute: 1 });
+  const [used, setUsed] = useState({ match: '', minute: 1, home: '' });
   const [feed, setFeed] = useState<{ comp: string; list: FeedMatch[]; msg: string; failed: boolean } | null>(null);
   const [feedBusy, setFeedBusy] = useState(false);
   const [redNote, setRedNote] = useState(false);
@@ -48,6 +51,8 @@ export default function LivePage() {
     try {
       const v = window.localStorage.getItem(LEAGUE_KEY) ?? '';
       if (v && allCompetitions().some((c) => c.id === v)) setLeague(v);
+      const mf = window.localStorage.getItem(MINFAIR_KEY);
+      if (mf) setMinFair(parseFair(mf).toFixed(2));
     } catch { /* storage unavailable */ }
   }, []);
 
@@ -56,6 +61,11 @@ export default function LivePage() {
     setLeague(id);
     setPicked(null);
     try { window.localStorage.setItem(LEAGUE_KEY, id); } catch { /* storage unavailable */ }
+  }
+
+  function changeMinFair(v: string) {
+    setMinFair(v);
+    try { window.localStorage.setItem(MINFAIR_KEY, v); } catch { /* storage unavailable */ }
   }
 
   function editMatch(v: string) {
@@ -113,7 +123,8 @@ export default function LivePage() {
     try {
       const st = { minute: clamp(f.minute, 1, 120), homeGoals: clamp(f.hg, 0, 20), awayGoals: clamp(f.ag, 0, 20), homeReds: clamp(f.hr, 0, 4), awayReds: clamp(f.ar, 0, 4) };
       const limit = clamp(maxPct, 50, 100);
-      const body: Record<string, unknown> = { match: match.trim(), competitionId: league, state: st, allowedGoals: loadSettings().allowed.goals };
+      const live = picked && match.trim() === `${picked.home} vs ${picked.away}` ? picked : null;
+      const body: Record<string, unknown> = { match: match.trim(), competitionId: league, state: live ? { ...st, stats: live.stats } : st, allowedGoals: loadSettings().allowed.goals, minFairOdds: parseFair(minFair) };
       if (mine.trim()) body.mine = mine.trim();
       if (limit < 100) body.maxProbability = limit / 100;
       const r = await fetch('/api/live', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -121,7 +132,7 @@ export default function LivePage() {
       if (!r.ok || !data || data.error) throw new Error((data && data.error) || `Request failed (${r.status})`);
       setRes(data as LiveResult);
       setAt(new Date().toTimeString().slice(0, 8));
-      setUsed({ match: match.trim(), minute: st.minute });
+      setUsed({ match: match.trim(), minute: st.minute, home: live ? live.home : '' });
     } catch (x) {
       setErr(x instanceof Error ? x.message : 'Request failed');
     } finally {
@@ -213,6 +224,9 @@ export default function LivePage() {
               <input className="input" type="text" placeholder="over 2.5 goals" value={mine} onChange={(e) => setMine(e.target.value)} />
             </Field>
             <div onKeyDown={noEnter}><Stepper label="Ignore picks above (%)" min={50} max={100} value={maxPct} onChange={setMaxPct} /></div>
+            <Field label="Hide picks paying below" hint="Fair odds under this are hidden because they pay almost nothing. 1.10 is a good start.">
+              <input className="input" type="number" inputMode="decimal" step="0.01" min="1.01" max="3" value={minFair} onChange={(e) => changeMinFair(e.target.value)} />
+            </Field>
             <button className="btn block" type="submit" disabled={loading}>{loading ? 'Pricing…' : 'Find live picks'}</button>
             {loading && <Skeleton lines={3} />}
           </div>
@@ -222,9 +236,13 @@ export default function LivePage() {
         {res && (
           <div className="stack">
             <div className="row" style={{ justifyContent: 'space-between' }}>
-              <span className="label">Updated at {at}</span>
+              <div className="row">
+                <span className="label">Updated at {at}</span>
+                {res.modelVersion && <span className="chip">{res.modelVersion}</span>}
+              </div>
               <button type="button" className="btn secondary sm" onClick={run} disabled={loading}>Refresh</button>
             </div>
+            <div className="muted">{res.pressure ? `Pressure used: ${used.home || 'Home'} ${Math.round(50 + 50 * res.pressure.tilt)}% (weight ${res.pressure.weight.toFixed(2)})` : 'Match stats not used.'}</div>
             {shown && <div className="label">{res.basis}</div>}
             {res.mine && card(res.mine, true)}
             {shown

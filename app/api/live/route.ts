@@ -1,6 +1,7 @@
 import { livePicks } from '@/lib/live';
 import type { LiveState } from '@/lib/live';
 import type { AllowedRange } from '@/lib/best';
+import type { TeamLive } from '@/lib/livefeed';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,6 +24,20 @@ const fail = (e: unknown): Response => {
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const inRange = (v: unknown, lo = -Infinity, hi = Infinity): boolean => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 
+const TEAM_KEYS = ['shots', 'shotsOnTarget', 'corners', 'possession', 'fouls', 'yellows'] as const;
+// One team's live stats: each field null (or missing) or a finite number from 0 to 300 (possession 0 to 100).
+const teamLive = (v: unknown): TeamLive | null => {
+  if (!isObj(v)) return null;
+  const out: TeamLive = { shots: null, shotsOnTarget: null, corners: null, possession: null, fouls: null, yellows: null };
+  for (const k of TEAM_KEYS) {
+    const x = v[k];
+    if (x === undefined || x === null) continue;
+    if (!inRange(x, 0, k === 'possession' ? 100 : 300)) return null;
+    out[k] = x as number;
+  }
+  return out;
+};
+
 export async function POST(req: Request): Promise<Response> {
   const b = await req.json().catch(() => null);
   if (!isObj(b)) return bad();
@@ -40,6 +55,13 @@ export async function POST(req: Request): Promise<Response> {
     if (!inRange(s[k], 0, k === 'corners' ? 40 : 20)) return bad();
     state[k] = s[k] as number;
   }
+  if (s.stats !== undefined && s.stats !== null) {
+    const st = s.stats;
+    const home = isObj(st) ? teamLive(st.home) : null;
+    const away = isObj(st) ? teamLive(st.away) : null;
+    if (!home || !away) return bad();
+    state.stats = { home, away };
+  }
   const mine = b.mine === undefined || b.mine === null ? undefined : b.mine;
   if (mine !== undefined && (typeof mine !== 'string' || mine.length > 80)) return bad();
   let allowed: AllowedRange | undefined;
@@ -50,8 +72,10 @@ export async function POST(req: Request): Promise<Response> {
   }
   const mp = b.maxProbability === undefined || b.maxProbability === null ? undefined : b.maxProbability;
   if (mp !== undefined && !inRange(mp, 0.5, 1)) return bad();
+  const mf = b.minFairOdds === undefined || b.minFairOdds === null ? undefined : b.minFairOdds;
+  if (mf !== undefined && !inRange(mf, 1.01, 3)) return bad();
   try {
-    return json(await livePicks(match, cid, state, mine as string | undefined, allowed, mp as number | undefined));
+    return json(await livePicks(match, cid, state, mine as string | undefined, allowed, mp as number | undefined, mf as number | undefined));
   } catch (e) {
     return fail(e);
   }
