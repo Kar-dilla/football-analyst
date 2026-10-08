@@ -1,5 +1,6 @@
 import type { MatchData, ParsedQuery } from '@/lib/types';
 import { cornersCardsModel } from '@/lib/models/cornersCards';
+import { poissonOver } from '@/lib/models/poisson';
 import { timingModel } from '@/lib/models/timing';
 import { subsModel } from '@/lib/models/subs';
 
@@ -38,7 +39,18 @@ export async function GET(req: Request): Promise<Response> {
     r ? [r.probability, ...(r.ladder ?? []).flatMap((l) => [l.over, l.under])] : [NaN],
   );
   const allInRange = vals.every((v) => Number.isFinite(v) && v >= 0 && v <= 1);
-  return new Response(JSON.stringify({ corners, cards, timing, subs, allInRange }), {
+
+  // Plain single-Poisson reference at the same corners mean the model uses (70% teams, 30% league).
+  const { home: h, away: a, leagueAvg } = DATA;
+  const teams = h && a ? h.cornersFor + h.cornersAgainst + a.cornersFor + a.cornersAgainst : NaN;
+  const mean = 0.7 * (teams / 2) + 0.3 * leagueAvg.corners;
+  const mixP = (side: 'over' | 'under', line: number): number =>
+    cornersCardsModel(q({ market: 'corners_ou', side, line }))?.probability ?? NaN;
+  // Fatter tails: the mixture must beat one Poisson on Over 12.5 and on Under 6.5.
+  const cornersMixWider =
+    mixP('over', 12.5) > poissonOver(mean, 12.5) && mixP('under', 6.5) > 1 - poissonOver(mean, 6.5);
+
+  return new Response(JSON.stringify({ corners, cards, timing, subs, cornersMixWider, allInRange }), {
     headers: { 'Content-Type': 'application/json' },
   });
 }

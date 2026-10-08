@@ -1,12 +1,34 @@
-import type { BaseResult, MatchData } from '@/lib/types';
+import type { BaseResult, LadderRow, MatchData } from '@/lib/types';
 import { poissonOver } from '@/lib/models/poisson';
-import { buildLadder } from '@/lib/ladder';
 
+const CORNERS_SPREAD = 0.2;
+const CARDS_SPREAD = 0.3;
 const CORNER_LINES = [6.5, 7.5, 8.5, 9.5, 10.5, 11.5, 12.5];
 const CARD_LINES = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
+}
+
+function round4(x: number): number {
+  return Math.round(x * 10000) / 10000;
+}
+
+// 3-point Poisson mixture: mean*(1-s), mean, mean*(1+s) with weights 0.25 / 0.5 / 0.25.
+function mixProb(mean: number, line: number, side: 'over' | 'under', spread: number): number {
+  const p = (m: number): number => {
+    const over = poissonOver(m, line);
+    return side === 'over' ? over : 1 - over;
+  };
+  return clamp(0.25 * p(mean * (1 - spread)) + 0.5 * p(mean) + 0.25 * p(mean * (1 + spread)), 0, 1);
+}
+
+function mixLadder(mean: number, lines: number[], spread: number): LadderRow[] {
+  return lines.map((line) => ({
+    line,
+    over: round4(mixProb(mean, line, 'over', spread)),
+    under: round4(mixProb(mean, line, 'under', spread)),
+  }));
 }
 
 function cornersMean(data: MatchData): number | null {
@@ -42,12 +64,12 @@ export function cornersCardsModel(data: MatchData): BaseResult | null {
   if (query.side !== 'over' && query.side !== 'under') return null;
   const mean = isCorners ? cornersMean(data) : cardsMean(data);
   if (mean === null || !Number.isFinite(mean) || mean <= 0) return null;
-  const over = clamp(poissonOver(mean, query.line), 0, 1);
+  const spread = isCorners ? CORNERS_SPREAD : CARDS_SPREAD;
   return {
     market: query.market,
-    probability: query.side === 'over' ? over : 1 - over,
-    ladder: buildLadder(mean, isCorners ? CORNER_LINES : CARD_LINES),
-    method: isCorners ? 'poisson-corners' : 'poisson-cards',
+    probability: mixProb(mean, query.line, query.side, spread),
+    ladder: mixLadder(mean, isCorners ? CORNER_LINES : CARD_LINES, spread),
+    method: isCorners ? 'poisson-corners-mix' : 'poisson-cards-mix',
     sampleSize: Math.min(home.games, away.games),
   };
 }
