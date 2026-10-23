@@ -41,6 +41,8 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     if (!leagueAvg) throw new Error('NO_DATA: international results data is unavailable');
   } else if (competition.csvPath) {
     [home, away, leagueAvg] = await Promise.all([loadTeamStats(competition, h), loadTeamStats(competition, a), loadLeagueAvg(competition)]);
+    if (!home) home = (await loadTeamStatsAnywhere(h))?.stats ?? null;
+    if (!away) away = (await loadTeamStatsAnywhere(a))?.stats ?? null;
   } else {
     const [hr, ar] = await Promise.all([loadTeamStatsAnywhere(h), loadTeamStatsAnywhere(a)]);
     home = hr?.stats ?? null;
