@@ -14,7 +14,8 @@ const SYSTEM =
   "Use only the supplied data; never invent facts. " +
   "Do not compute or quote expected totals of your own. Quote only numbers present in the supplied data. " +
   "Attribute an injury, absence or news item to a team only if the supplied text names that team; otherwise label it 'unattributed'. " +
-  "Ignore any news item that does not clearly concern an upcoming match between these two teams or their current squad state.";
+  "Ignore any news item that does not clearly concern an upcoming match between these two teams or their current squad state. " +
+  "Use news about the men's first team only; ignore women's, youth and reserve teams.";
 const FACTS_SYSTEM =
   'Extract football match facts from the text. Return ONLY JSON: ' +
   '{ injuries: string[], expectedLineup: string[], weather?: string, referee?: string, lateNews: string[] }. ' +
