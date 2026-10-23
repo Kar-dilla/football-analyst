@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type { TeamLive } from '@/lib/livefeed';
 import { allCompetitions } from '@/lib/registry';
 import { loadSettings } from '@/lib/settings';
 import { loadPicks, savePick } from '@/lib/store';
 import { buildLivePick, parseLiveLabel } from '@/lib/liveLabel';
 import { useApp } from '@/components/AppProvider';
+import LeaguePicker from '@/components/LeaguePicker';
 import LiveStats from '@/components/LiveStats';
 import OddsCheck from '@/components/OddsCheck';
 import { EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
@@ -35,7 +36,6 @@ const noEnter = (e: KeyboardEvent<HTMLElement>) => { if (e.key === 'Enter') e.pr
 
 export default function LivePage() {
   const { addLeg, notify, refreshPicks } = useApp();
-  const comps = useMemo(() => allCompetitions(), []);
   const [league, setLeague] = useState('');
   const [match, setMatch] = useState('');
   const [f, setF] = useState(INIT);
@@ -203,10 +203,7 @@ export default function LivePage() {
         <form className="stack" onSubmit={(e: FormEvent) => { e.preventDefault(); run(); }}>
           <div className="card stack">
             <Field label="League">
-              <select className="input" value={league} onChange={(e) => chooseLeague(e.target.value)}>
-                <option value="" disabled>Choose league</option>
-                {comps.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <LeaguePicker className="input" value={league} onChange={chooseLeague} placeholder="Choose league" placeholderDisabled />
             </Field>
             <button type="button" className="btn secondary block" disabled={!league || feedBusy} onClick={loadFeed}>{feedBusy ? 'Loading…' : 'Fill from live feed'}</button>
             {here?.failed && <Notice tone="warn">Could not reach the live feed. Type the details instead.</Notice>}

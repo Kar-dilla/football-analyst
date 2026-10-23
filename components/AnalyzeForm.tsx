@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import type { Analysis } from '@/lib/types';
 import FixturePicker from '@/components/FixturePicker';
+import LeaguePicker from '@/components/LeaguePicker';
 import { Field, Notice, Stepper } from '@/components/ui';
 
 const LEAGUE_KEY = 'fa_league_v1';
@@ -70,10 +71,7 @@ export default function AnalyzeForm(props: { onResult: (analysis: Analysis, thre
   return (
     <form className="card stack" onSubmit={submit}>
       <Field label="League">
-        <select className="input" value={competitionId} onChange={(e) => chooseLeague(e.target.value)}>
-          <option value="">Auto-detect league</option>
-          {allCompetitions().map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <LeaguePicker className="input" value={competitionId} onChange={chooseLeague} placeholder="Auto-detect league" />
       </Field>
       <FixturePicker competitionId={competitionId} onPick={pick} />
       <Field label="Match and bet" hint="Example: Arsenal vs Chelsea over 9.5 corners">

@@ -9,6 +9,7 @@ export interface Competition {
   csvPath?: string;       // e.g. "mmz4281/2627/E0.csv" or "new/JPN.csv"
   apiFootballId?: number;
   confidenceCap: Conf;
+  group?: string;         // dropdown group label, e.g. "England"
 }
 
 export interface ParsedQuery {

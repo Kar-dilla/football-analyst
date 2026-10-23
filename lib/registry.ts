@@ -35,15 +35,31 @@ const ROWS: Row[] = [
 
 const CAP: Record<Tier, Conf> = { A: 'high', B: 'medium', C: 'low' };
 
+// Dropdown group per competition id. Ids not listed here have no group.
+const GROUP: Record<string, string> = {
+  epl: 'England', championship: 'England', league1: 'England', league2: 'England',
+  scotprem: 'Scotland', scotchamp: 'Scotland', scot1: 'Scotland', scot2: 'Scotland',
+  seriea: 'Italy', laliga: 'Spain', bundesliga: 'Germany', ligue1: 'France',
+  worldcup: 'International', afcon: 'International', nations: 'International',
+};
+
+// Football season code, e.g. "2627". A new season starts in July.
+const SEASON = (() => {
+  const d = new Date();
+  const y = d.getUTCFullYear() - (d.getUTCMonth() < 6 ? 1 : 0);
+  return String(y % 100).padStart(2, '0') + String((y + 1) % 100).padStart(2, '0');
+})();
+
 const COMPETITIONS: Competition[] = ROWS.map(([id, name, tier, type, fd, csv, api]) => ({
   id,
   name,
   tier,
   type,
   ...(fd !== '-' ? { fdCode: fd } : {}),
-  ...(csv !== '-' ? { csvPath: csv } : {}),
+  ...(csv !== '-' ? { csvPath: csv.replace('/2627/', `/${SEASON}/`) } : {}),
   apiFootballId: api,
   confidenceCap: type === 'national' ? 'medium' : CAP[tier],
+  ...(GROUP[id] ? { group: GROUP[id] } : {}),
 }));
 
 function norm(s: string): string {

@@ -5,6 +5,7 @@ import { allCompetitions } from '@/lib/registry';
 import { DEFAULT_ALLOWED, loadSettings, saveSettings } from '@/lib/settings';
 import type { AllowedLines, BestResult, MenuItem } from '@/lib/best';
 import FixturePicker from '@/components/FixturePicker';
+import LeaguePicker from '@/components/LeaguePicker';
 import OddsCheck from '@/components/OddsCheck';
 import { Accordion, EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
@@ -99,10 +100,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
       <div className="stack">
         <div className="card stack">
           <Field label="League">
-            <select className="input" value={comp} onChange={(e) => chooseLeague(e.target.value)}>
-              <option value="" disabled>Choose league</option>
-              {allCompetitions().map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <LeaguePicker className="input" value={comp} onChange={chooseLeague} placeholder="Choose league" placeholderDisabled />
           </Field>
           <FixturePicker competitionId={comp} onPick={(h, a) => setMatch(h + ' vs ' + a)} />
           <Field label="Match"><input className="input" placeholder="Arsenal vs Chelsea" value={match} onChange={(e) => setMatch(e.target.value)} /></Field>
