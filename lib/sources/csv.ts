@@ -14,6 +14,9 @@ const ALIAS: Record<string, string> = {
   spurs: 'tottenham', wolves: 'wolverhampton', forest: 'nottingham forest',
   'nott m forest': 'nottingham forest', 'ath madrid': 'atletico madrid',
   'paris sg': 'paris saint germain', psg: 'paris saint germain',
+  qpr: 'queens park rangers', 'sheffield weds': 'sheffield wednesday', 'bristol rvs': 'bristol rovers',
+  hearts: 'heart of midlothian', 'queens park': 'queen s park', 'raith rvs': 'raith rovers',
+  'queen of sth': 'queen of the south',
   'sp lisbon': 'sporting cp', 'academico de viseu': 'academico viseu',
 };
 
