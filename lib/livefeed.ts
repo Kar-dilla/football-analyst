@@ -1,4 +1,5 @@
 import { getOrSet } from '@/lib/cache';
+import { getCompetition } from '@/lib/registry';
 
 export interface LiveMatch { home: string; away: string; state: 'pre' | 'in' | 'post'; minute: number | null; homeGoals: number; awayGoals: number; homeReds: number | null; awayReds: number | null; stats: { home: TeamLive; away: TeamLive } | null }
 export interface Fixture { home: string; away: string; kickoff: string }
@@ -155,12 +156,67 @@ function parseFixtures(data: unknown, from: number, to: number, seen: Set<string
   return out;
 }
 
+// ---- fallback: football-data.co.uk fixtures.csv (UK local kickoff times) ----
+const lastSunday = (y: number, month0: number): number => {
+  const last = new Date(Date.UTC(y, month0 + 1, 0));
+  return Date.UTC(y, month0, last.getUTCDate() - last.getUTCDay(), 1);   // 01:00 UTC
+};
+
+// UK summer time runs from the last Sunday of March to the last Sunday of October (both 01:00 UTC).
+function ukToUtc(y: number, mo: number, d: number, h: number, mi: number): number | null {
+  const naive = Date.UTC(y, mo - 1, d, h, mi);
+  const c = new Date(naive);
+  if (c.getUTCFullYear() !== y || c.getUTCMonth() !== mo - 1 || c.getUTCDate() !== d) return null;
+  const summer = naive - 3600000;
+  return summer >= lastSunday(y, 2) && summer < lastSunday(y, 9) ? summer : naive;
+}
+
+export async function csvFixtures(competitionId: string, from: number, to: number): Promise<Fixture[]> {
+  try {
+    const path = getCompetition(competitionId)?.csvPath;
+    if (!path || path.startsWith('new/')) return [];
+    const div = (path.split('/').pop() ?? '').replace(/\.csv$/i, '');
+    if (!div) return [];
+    const text = await getOrSet<string>('fixturescsv', 30 * 60000, async () => {
+      const res = await fetch('https://www.football-data.co.uk/fixtures.csv', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.text();
+    });
+    const lines = text.replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').filter((l) => l.trim());
+    if (lines.length < 2) return [];
+    const head = lines[0].split(',').map((h) => h.trim());
+    const [iDiv, iDate, iTime, iHome, iAway] = ['Div', 'Date', 'Time', 'HomeTeam', 'AwayTeam'].map((n) => head.indexOf(n));
+    if ([iDiv, iDate, iTime, iHome, iAway].some((i) => i < 0)) return [];
+    const out: Fixture[] = [];
+    for (const line of lines.slice(1)) {
+      const c = line.split(',').map((x) => x.trim());
+      if (c[iDiv] !== div) continue;
+      const dm = /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/.exec(c[iDate] ?? '');
+      const tm = /^(\d{1,2}):(\d{2})$/.exec(c[iTime] ?? '');
+      const home = c[iHome];
+      const away = c[iAway];
+      if (!dm || !tm || !home || !away) continue;
+      const year = Number(dm[3]) + (dm[3].length === 2 ? 2000 : 0);
+      const t = ukToUtc(year, Number(dm[2]), Number(dm[1]), Number(tm[1]), Number(tm[2]));
+      if (t === null || t < from || t >= to) continue;
+      out.push({ home, away, kickoff: new Date(t).toISOString() });
+    }
+    return out.sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff));
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchFixtures(competitionId: string, day: 'today' | 'tomorrow', tzOffsetMinutes: number): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> {
-  const slug = espnSlug(competitionId);
-  if (!slug) return { fixtures: [], datesSupported: false };
   const tz = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : 0;
   const start = Math.floor((Date.now() + tz * 60000) / 86400000) * 86400000 - tz * 60000 + (day === 'tomorrow' ? 86400000 : 0);
   const end = start + 86400000;
+  const viaCsv = async (flag: boolean): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> => {
+    const f = await csvFixtures(competitionId, Math.max(start, Date.now()), end);
+    return { fixtures: f, datesSupported: f.length > 0 ? true : flag };
+  };
+  const slug = espnSlug(competitionId);
+  if (!slug) return viaCsv(false);
   const dates = Array.from(new Set([start - 86400000, start, end].map(ymd)));
   const got = await Promise.all(dates.map(async (d) => {
     try { return { data: await getOrSet<unknown>(`espn:${slug}:${d}`, 60000, () => fetchScoreboard(slug, d)) }; } catch { return null; }
@@ -169,11 +225,12 @@ export async function fetchFixtures(competitionId: string, day: 'today' | 'tomor
   let sources = done.map((g) => g.data);
   let datesSupported = true;
   if (!done.length) {
-    if (day === 'tomorrow') return { fixtures: [], datesSupported: false };
+    if (day === 'tomorrow') return viaCsv(false);
     datesSupported = false;
     try { sources = [await getOrSet<unknown>('espn:' + slug, 20000, () => fetchScoreboard(slug))]; } catch { sources = []; }
   }
   const seen = new Set<string>();
   const fixtures = sources.flatMap((d) => parseFixtures(d, start, end, seen)).sort((a, b) => Date.parse(a.kickoff) - Date.parse(b.kickoff));
+  if (fixtures.length === 0) return viaCsv(datesSupported);
   return { fixtures, datesSupported };
 }
