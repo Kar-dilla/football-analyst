@@ -11,6 +11,6 @@ export async function GET() {
     premierLeagueTier === 'A' &&
     worldCupCap === 'medium' &&
     uclCap === 'low' &&
-    count === 20;
+    count === 27;
   return Response.json({ premierLeagueTier, worldCupCap, uclCap, count, ok });
 }

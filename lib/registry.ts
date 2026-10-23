@@ -24,6 +24,13 @@ const ROWS: Row[] = [
   ['worldcup', 'World Cup', 'C', 'national', 'WC', '-', 1],
   ['afcon', 'AFCON', 'C', 'national', '-', '-', 6],
   ['nations', 'Nations League', 'C', 'national', '-', '-', 5],
+  ['championship', 'Championship', 'A', 'club', '-', 'mmz4281/2627/E1.csv', 0],
+  ['league1', 'League One', 'A', 'club', '-', 'mmz4281/2627/E2.csv', 0],
+  ['league2', 'League Two', 'A', 'club', '-', 'mmz4281/2627/E3.csv', 0],
+  ['scotprem', 'Scottish Premiership', 'A', 'club', '-', 'mmz4281/2627/SC0.csv', 0],
+  ['scotchamp', 'Scottish Championship', 'A', 'club', '-', 'mmz4281/2627/SC1.csv', 0],
+  ['scot1', 'Scottish League One', 'A', 'club', '-', 'mmz4281/2627/SC2.csv', 0],
+  ['scot2', 'Scottish League Two', 'A', 'club', '-', 'mmz4281/2627/SC3.csv', 0],
 ];
 
 const CAP: Record<Tier, Conf> = { A: 'high', B: 'medium', C: 'low' };

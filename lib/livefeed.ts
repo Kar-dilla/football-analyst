@@ -17,6 +17,8 @@ const SLUGS: Record<string, string> = {
   mls: 'usa.1', japan: 'jpn.1', saudi: 'ksa.1', india: 'ind.1', ucl: 'uefa.champions',
   uel: 'uefa.europa', uecl: 'uefa.europa.conf', nations: 'uefa.nations', worldcup: 'fifa.world',
   afcon: 'caf.nations',
+  championship: 'eng.2', league1: 'eng.3', league2: 'eng.4',
+  scotprem: 'sco.1', scotchamp: 'sco.2', scot1: 'sco.3', scot2: 'sco.4',
 };
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);

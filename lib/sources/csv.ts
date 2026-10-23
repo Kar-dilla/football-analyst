@@ -14,6 +14,7 @@ const ALIAS: Record<string, string> = {
   spurs: 'tottenham', wolves: 'wolverhampton', forest: 'nottingham forest',
   'nott m forest': 'nottingham forest', 'ath madrid': 'atletico madrid',
   'paris sg': 'paris saint germain', psg: 'paris saint germain',
+  'sp lisbon': 'sporting cp', 'academico de viseu': 'academico viseu',
 };
 
 function key(s: string): string {
