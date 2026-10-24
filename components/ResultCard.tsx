@@ -1,6 +1,6 @@
 'use client';
 
-import type { Analysis, GapFacts } from '@/lib/types';
+import type { Analysis, GapFacts, H2HMeeting } from '@/lib/types';
 import GapFill from '@/components/GapFill';
 import { Accordion, Dot, Gauge, Notice, PageHeader, Stat } from '@/components/ui';
 import { getCompetition } from '@/lib/registry';
@@ -14,6 +14,16 @@ const URL_RE = /https?:\/\/[^\s<>"')\]]+/;
 
 function List({ items }: { items: string[] }) {
   return <ul style={UL}>{items.map((s, i) => <li key={i}>{s}</li>)}</ul>;
+}
+
+function meetingLine(m: H2HMeeting): string {
+  const ht = m.htHome !== undefined && m.htAway !== undefined ? ` (HT ${m.htHome}-${m.htAway})` : '';
+  const extra = [m.corners !== undefined ? `${m.corners} corners` : '', m.cards !== undefined ? `${m.cards} cards` : ''].filter(Boolean).join(', ');
+  return `${m.date}: ${m.home} ${m.hg}-${m.ag} ${m.away}${ht}${extra ? ` · ${extra}` : ''}`;
+}
+
+function overLine(label: string, rows: { line: number; over: number }[], n: number): string | null {
+  return rows.length ? `${label}: ${rows.map((r) => `Over ${r.line}: ${r.over} of ${n}`).join(' · ')}` : null;
 }
 
 function Source({ s }: { s: string }) {
@@ -37,6 +47,16 @@ export default function ResultCard({ analysis: a, threshold, onRerun }: { analys
   const diff = a.probability - a.base.probability;
   const changed = Math.abs(diff) >= 0.01 - 1e-9;
   const pts = Math.round(diff * 100);
+  const h2h = a.h2h;
+  const h2hN = h2h ? h2h.meetings.length : 0;
+  const h2hSummary = h2h
+    ? [
+        overLine('Goals', h2h.goals, h2hN),
+        `BTTS: ${h2h.btts} of ${h2hN}`,
+        overLine('Corners', h2h.corners, h2h.meetings.filter((m) => m.corners !== undefined).length),
+        overLine('Cards', h2h.cards, h2h.meetings.filter((m) => m.cards !== undefined).length),
+      ].filter((s): s is string => s !== null)
+    : [];
 
   return (
     <div>
@@ -89,6 +109,22 @@ export default function ResultCard({ analysis: a, threshold, onRerun }: { analys
           </Accordion>
         )}
         {a.evidence.length > 0 && <Accordion title="Evidence" count={a.evidence.length}><List items={a.evidence} /></Accordion>}
+        {h2h && h2hN > 0 && (
+          <Accordion title="Head to head" count={h2hN}>
+            <div className="stack">
+              {h2hN < 3 && <div className="muted">Only {h2hN} {h2hN === 1 ? 'meeting' : 'meetings'} found</div>}
+              <List items={h2h.meetings.map(meetingLine)} />
+              <List items={h2hSummary} />
+              {h2h.verdict && (
+                <Notice tone={h2h.verdict.agrees ? 'ok' : 'warn'}>
+                  <b>{h2h.verdict.agrees ? 'Matches the model' : 'Conflicts with the model'}</b>
+                  <div className="muted">{h2h.verdict.text}</div>
+                </Notice>
+              )}
+              <p className="muted" style={{ margin: 0 }}>Small sample. Shown for context only; it does not change the probability.</p>
+            </div>
+          </Accordion>
+        )}
         {a.sources.length > 0 && (
           <Accordion title="Sources" count={a.sources.length}>
             <ul style={UL}>{a.sources.map((s, i) => <li key={i}><Source s={s} /></li>)}</ul>

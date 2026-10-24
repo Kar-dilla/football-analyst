@@ -1,4 +1,4 @@
-import type { Competition, MatchData, RefereeStats, TeamStats } from '@/lib/types';
+import type { Competition, H2HMeeting, H2HSummary, MatchData, RefereeStats, TeamStats } from '@/lib/types';
 import { getOrSet } from '@/lib/cache';
 import { allCompetitions } from '@/lib/registry';
 import { fitStrengths } from '@/lib/models/strengths';
@@ -243,4 +243,66 @@ export async function loadStrengths(competition: Competition, home: string, away
   if (h === undefined || a === undefined || h === a) return null;
   const side = (t: string) => ({ att: fit.att.get(t) ?? 1, def: fit.def.get(t) ?? 1, n: fit.n.get(t) ?? 0 });
   return { home: side(h), away: side(a), homeAdv: fit.homeAdv, mu: fit.mu };
+}
+
+// ---- head to head: last 3 meetings across the current season and up to 3 earlier ones (display only) ----
+function seasonPath(path: string, k: number): string | null {
+  const m = path.match(/^(mmz4281\/)(\d{2})(\d{2})(\/.*)$/);
+  const back = (s: string): string => String((parseInt(s, 10) + 100 - k) % 100).padStart(2, '0');
+  return m ? `${m[1]}${back(m[2])}${back(m[3])}${m[4]}` : null;
+}
+
+const numOrUndef = (v: string | undefined): number | undefined => {
+  const s = (v ?? '').trim();
+  const n = s === '' ? NaN : Number(s);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+export async function loadH2H(competition: Competition, home: string, away: string): Promise<H2HSummary | null> {
+  try {
+    const path = competition.csvPath;
+    if (!path || path.startsWith('new/')) return null;
+    const files = [0, 1, 2, 3]
+      .map((k) => ({ k, p: k === 0 ? path : seasonPath(path, k) }))
+      .filter((f): f is { k: number; p: string } => f.p !== null);
+    const sets = await Promise.all(files.map(async (f) => ({
+      p: f.p, rows: played((await fetchRows(f.p, f.k === 0 ? SIX_HOURS : DAY)) ?? []),
+    })));
+    const found: { t: number; m: H2HMeeting }[] = [];
+    for (const s of sets) {
+      const sm = s.p.match(/^mmz4281\/(\d{2})(\d{2})\//);
+      const season = sm ? `${sm[1]}/${sm[2]}` : '';
+      for (const r of s.rows) {
+        const h = r.HomeTeam || '', a = r.AwayTeam || '';
+        if (!((sameTeam(h, home) && sameTeam(a, away)) || (sameTeam(h, away) && sameTeam(a, home)))) continue;
+        const t = dayMs(r.Date), hg = numOrUndef(r.FTHG), ag = numOrUndef(r.FTAG);
+        if (t === null || hg === undefined || ag === undefined) continue;
+        const m: H2HMeeting = { date: new Date(t).toISOString().slice(0, 10), season, home: h, away: a, hg, ag };
+        const htH = numOrUndef(r.HTHG), htA = numOrUndef(r.HTAG);
+        if (htH !== undefined) m.htHome = htH;
+        if (htA !== undefined) m.htAway = htA;
+        const hc = numOrUndef(r.HC), ac = numOrUndef(r.AC);
+        if (hc !== undefined && ac !== undefined) m.corners = hc + ac;
+        const hy = numOrUndef(r.HY), ay = numOrUndef(r.AY);
+        if (hy !== undefined && ay !== undefined) m.cards = hy + ay + (numOrUndef(r.HR) ?? 0) + (numOrUndef(r.AR) ?? 0);
+        found.push({ t, m });
+      }
+    }
+    found.sort((x, y) => y.t - x.t);
+    const meetings = found.slice(0, 3).map((f) => f.m);
+    if (meetings.length < 1) return null;
+    const tally = (vals: number[], lines: number[]): { line: number; over: number }[] =>
+      vals.length ? lines.map((line) => ({ line, over: vals.filter((v) => v > line).length })) : [];
+    const corners = meetings.filter((m) => m.corners !== undefined).map((m) => m.corners as number);
+    const cards = meetings.filter((m) => m.cards !== undefined).map((m) => m.cards as number);
+    return {
+      meetings,
+      goals: tally(meetings.map((m) => m.hg + m.ag), [0.5, 1.5, 2.5, 3.5, 4.5]),
+      btts: meetings.filter((m) => m.hg > 0 && m.ag > 0).length,
+      corners: tally(corners, [8.5, 9.5, 10.5, 11.5, 12.5]),
+      cards: tally(cards, [2.5, 3.5, 4.5, 5.5, 6.5]),
+    };
+  } catch {
+    return null;
+  }
 }
