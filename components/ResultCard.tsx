@@ -1,6 +1,6 @@
 'use client';
 
-import type { Analysis, GapFacts, H2HMeeting } from '@/lib/types';
+import type { Analysis, GapFacts, H2HMeeting, MatchesPanel, Streak } from '@/lib/types';
 import GapFill from '@/components/GapFill';
 import { Accordion, Dot, Gauge, Notice, PageHeader, Stat } from '@/components/ui';
 import { getCompetition } from '@/lib/registry';
@@ -16,14 +16,89 @@ function List({ items }: { items: string[] }) {
   return <ul style={UL}>{items.map((s, i) => <li key={i}>{s}</li>)}</ul>;
 }
 
-function meetingLine(m: H2HMeeting): string {
-  const ht = m.htHome !== undefined && m.htAway !== undefined ? ` (HT ${m.htHome}-${m.htAway})` : '';
-  const extra = [m.corners !== undefined ? `${m.corners} corners` : '', m.cards !== undefined ? `${m.cards} cards` : ''].filter(Boolean).join(', ');
-  return `${m.date}: ${m.home} ${m.hg}-${m.ag} ${m.away}${ht}${extra ? ` · ${extra}` : ''}`;
+// ---- Matches / H2H panel (display only), laid out like Sofascore in the app's colours ----
+type Who = [string, string][]; // [team, colour]
+const CA = 'var(--accent)';
+const CB = 'var(--info)';
+const ROW = { display: 'grid', gridTemplateColumns: '64px 1fr 48px', alignItems: 'center', gap: 8, padding: '10px 0', borderTop: '1px solid var(--border)' } as const;
+const htOf = (m: H2HMeeting): string => (m.htHome !== undefined && m.htAway !== undefined ? `HT ${m.htHome}-${m.htAway}` : '');
+
+function Head({ children }: { children: string }) {
+  return <div className="eyebrow" style={{ color: 'var(--muted)' }}>{children}</div>;
 }
 
-function overLine(label: string, rows: { line: number; over: number }[], n: number): string | null {
-  return rows.length ? `${label}: ${rows.map((r) => `Over ${r.line}: ${r.over} of ${n}`).join(' · ')}` : null;
+function Crest({ team, c }: { team: string; c: string }) {
+  return (
+    <span title={team} aria-label={team} style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', border: `1.5px solid ${c}`, background: `color-mix(in srgb, ${c} 14%, transparent)`, color: c, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700 }}>
+      {team.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase()}
+    </span>
+  );
+}
+
+function StreakRow({ s, who }: { s: Streak; who: Who }) {
+  const run = /^No (losses|clean sheet)$/.test(s.label);
+  return (
+    <div style={ROW}>
+      <span style={{ display: 'flex', gap: 4 }}>{who.map(([t, c]) => <Crest key={t} team={t} c={c} />)}</span>
+      <span style={{ textAlign: 'center', fontWeight: 600 }}>{s.label}</span>
+      <span className="num" style={{ textAlign: 'right', fontWeight: 700 }}>{run ? s.hit : `${s.hit}/${s.of}`}</span>
+    </div>
+  );
+}
+
+// Display-only head to head record, streaks and recent form. Reusable on other screens.
+export function MatchesPanelView({ m }: { m: MatchesPanel }) {
+  const h = m.h2h;
+  const n = h ? h.meetings.length : 0;
+  const tc = (t: string, i: number): string => (h ? (t === h.teamB ? CB : CA) : i === 0 ? CA : CB);
+  return (
+    <div className="stack">
+      {h && (
+        <>
+          <Head>{`Head-to-head · last ${n} ${n === 1 ? 'match' : 'matches'}`}</Head>
+          <div role="group" aria-label={`Last ${n} ${n === 1 ? 'meeting' : 'meetings'}: ${h.teamA} ${h.winsA} - Draws ${h.draws} - ${h.teamB} ${h.winsB}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, textAlign: 'center' }}>
+            {([[h.winsA, h.teamA, CA], [h.draws, 'Draws', 'var(--muted)'], [h.winsB, h.teamB, CB]] as const).map(([v, t, c], i) => (
+              <div key={i} style={{ minWidth: 0 }}>
+                <div className="num" style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.2, color: c }}>{v}</div>
+                <div className="label" style={{ overflowWrap: 'anywhere' }}>{t}</div>
+              </div>
+            ))}
+          </div>
+          {h.streaks.length > 0 && (
+            <>
+              <Head>Head-to-head streaks</Head>
+              <div>
+                {h.streaks.map((s) => {
+                  const a = s.label.startsWith(`${h.teamA}: `);
+                  const b = s.label.startsWith(`${h.teamB}: `);
+                  const own = a ? h.teamA : b ? h.teamB : '';
+                  const who: Who = own ? [[own, a ? CA : CB]] : [[h.teamA, CA], [h.teamB, CB]];
+                  return <StreakRow key={s.label} s={own ? { ...s, label: s.label.slice(own.length + 2) } : s} who={who} />;
+                })}
+              </div>
+            </>
+          )}
+          <Head>Past matches</Head>
+          <div>
+            {h.meetings.map((x, i) => (
+              <div key={i} style={{ ...ROW, gridTemplateColumns: '84px 1fr auto' }}>
+                <span className="label num">{x.date}</span>
+                <span style={{ textAlign: 'center' }}>{x.home} <b className="num">{x.hg}-{x.ag}</b> {x.away}</span>
+                <span className="label num">{htOf(x)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {m.form.map((f, i) => (
+        <div className="stack" key={f.team}>
+          <Head>{`Recent form · ${f.team}`}</Head>
+          <div>{f.streaks.map((s) => <StreakRow key={s.label} s={s} who={[[f.team, tc(f.team, i)]]} />)}</div>
+        </div>
+      ))}
+      <p className="muted" style={{ margin: 0 }}>Small sample. For context only; it does not change the probability.</p>
+    </div>
+  );
 }
 
 function Source({ s }: { s: string }) {
@@ -47,16 +122,6 @@ export default function ResultCard({ analysis: a, threshold, onRerun }: { analys
   const diff = a.probability - a.base.probability;
   const changed = Math.abs(diff) >= 0.01 - 1e-9;
   const pts = Math.round(diff * 100);
-  const h2h = a.h2h;
-  const h2hN = h2h ? h2h.meetings.length : 0;
-  const h2hSummary = h2h
-    ? [
-        overLine('Goals', h2h.goals, h2hN),
-        `BTTS: ${h2h.btts} of ${h2hN}`,
-        overLine('Corners', h2h.corners, h2h.meetings.filter((m) => m.corners !== undefined).length),
-        overLine('Cards', h2h.cards, h2h.meetings.filter((m) => m.cards !== undefined).length),
-      ].filter((s): s is string => s !== null)
-    : [];
 
   return (
     <div>
@@ -97,6 +162,11 @@ export default function ResultCard({ analysis: a, threshold, onRerun }: { analys
             </div>
           </Accordion>
         )}
+        {a.matches && (
+          <Accordion title="Matches / H2H" count={a.matches.h2h ? a.matches.h2h.meetings.length : undefined} defaultOpen>
+            <MatchesPanelView m={a.matches} />
+          </Accordion>
+        )}
         {a.drivers.length > 0 && <Accordion title="Why this number" count={a.drivers.length} defaultOpen><List items={a.drivers} /></Accordion>}
         {a.tailRisks.length > 0 && <Accordion title="What could go wrong" count={a.tailRisks.length}><List items={a.tailRisks} /></Accordion>}
         {a.flags.length > 0 && (
@@ -109,22 +179,6 @@ export default function ResultCard({ analysis: a, threshold, onRerun }: { analys
           </Accordion>
         )}
         {a.evidence.length > 0 && <Accordion title="Evidence" count={a.evidence.length}><List items={a.evidence} /></Accordion>}
-        {h2h && h2hN > 0 && (
-          <Accordion title="Head to head" count={h2hN}>
-            <div className="stack">
-              {h2hN < 3 && <div className="muted">Only {h2hN} {h2hN === 1 ? 'meeting' : 'meetings'} found</div>}
-              <List items={h2h.meetings.map(meetingLine)} />
-              <List items={h2hSummary} />
-              {h2h.verdict && (
-                <Notice tone={h2h.verdict.agrees ? 'ok' : 'warn'}>
-                  <b>{h2h.verdict.agrees ? 'Matches the model' : 'Conflicts with the model'}</b>
-                  <div className="muted">{h2h.verdict.text}</div>
-                </Notice>
-              )}
-              <p className="muted" style={{ margin: 0 }}>Small sample. Shown for context only; it does not change the probability.</p>
-            </div>
-          </Accordion>
-        )}
         {a.sources.length > 0 && (
           <Accordion title="Sources" count={a.sources.length}>
             <ul style={UL}>{a.sources.map((s, i) => <li key={i}><Source s={s} /></li>)}</ul>

@@ -55,9 +55,11 @@ export interface BaseResult {
 
 export interface Flag { key: string; label: string; impact: 'up'|'down'|'neutral'; source: 'auto'|'search'|'user' }
 
-// Display-only head-to-head context. Never feeds the model.
-export interface H2HMeeting { date: string; season: string; home: string; away: string; hg: number; ag: number; htHome?: number; htAway?: number; corners?: number; cards?: number }
-export interface H2HSummary { meetings: H2HMeeting[]; goals: { line: number; over: number }[]; btts: number; corners: { line: number; over: number }[]; cards: { line: number; over: number }[]; verdict?: { text: string; agrees: boolean } }   // over = meetings over the line; under = meetings (with data) minus over
+// Display-only "Matches and H2H" panel. Never feeds the model.
+export interface Streak { label: string; hit: number; of: number }
+export interface FormBlock { team: string; streaks: Streak[] }
+export interface H2HMeeting { date: string; home: string; away: string; hg: number; ag: number; htHome?: number; htAway?: number; corners?: number; cards?: number }
+export interface MatchesPanel { h2h: { meetings: H2HMeeting[]; winsA: number; draws: number; winsB: number; teamA: string; teamB: string; streaks: Streak[] } | null; form: FormBlock[] }
 
 export interface Analysis {
   query: ParsedQuery; tier: Tier; base: BaseResult;
@@ -68,7 +70,7 @@ export interface Analysis {
   needs: string[];            // info the user could paste to sharpen the analysis
   sources: string[];          // search snippets used
   createdAt: string;
-  h2h?: H2HSummary;           // display-only head-to-head panel data
+  matches?: MatchesPanel;     // display-only H2H record and streaks panel
 }
 
 export interface Pick {

@@ -1,4 +1,4 @@
-import type { Competition, H2HMeeting, H2HSummary, MatchData, RefereeStats, TeamStats } from '@/lib/types';
+import type { Competition, FormBlock, H2HMeeting, MatchData, MatchesPanel, RefereeStats, Streak, TeamStats } from '@/lib/types';
 import { getOrSet } from '@/lib/cache';
 import { allCompetitions } from '@/lib/registry';
 import { fitStrengths } from '@/lib/models/strengths';
@@ -245,7 +245,7 @@ export async function loadStrengths(competition: Competition, home: string, away
   return { home: side(h), away: side(a), homeAdv: fit.homeAdv, mu: fit.mu };
 }
 
-// ---- head to head: last 3 meetings across the current season and up to 3 earlier ones (display only) ----
+// ---- matches panel: H2H record + streaks for the fixture and each team's form (display only) ----
 function seasonPath(path: string, k: number): string | null {
   const m = path.match(/^(mmz4281\/)(\d{2})(\d{2})(\/.*)$/);
   const back = (s: string): string => String((parseInt(s, 10) + 100 - k) % 100).padStart(2, '0');
@@ -258,50 +258,129 @@ const numOrUndef = (v: string | undefined): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-export async function loadH2H(competition: Competition, home: string, away: string): Promise<H2HSummary | null> {
+type Game = { t: number; home: string; away: string; hg: number; ag: number; htH?: number; htA?: number; corners?: number; cards?: number };
+
+function toGame(r: Row): Game | null {
+  const t = dayMs(r.Date), hg = numOrUndef(r.FTHG), ag = numOrUndef(r.FTAG);
+  const home = (r.HomeTeam || '').trim(), away = (r.AwayTeam || '').trim();
+  if (t === null || hg === undefined || ag === undefined || !home || !away) return null;
+  const g: Game = { t, home, away, hg, ag };
+  const htH = numOrUndef(r.HTHG), htA = numOrUndef(r.HTAG);
+  if (htH !== undefined) g.htH = htH;
+  if (htA !== undefined) g.htA = htA;
+  const hc = numOrUndef(r.HC), ac = numOrUndef(r.AC);
+  if (hc !== undefined && ac !== undefined) g.corners = hc + ac;
+  const hy = numOrUndef(r.HY), ay = numOrUndef(r.AY);
+  if (hy !== undefined && ay !== undefined) g.cards = hy + ay + (numOrUndef(r.HR) ?? 0) + (numOrUndef(r.AR) ?? 0);
+  return g;
+}
+
+const toMeeting = (g: Game): H2HMeeting => {
+  const m: H2HMeeting = { date: new Date(g.t).toISOString().slice(0, 10), home: g.home, away: g.away, hg: g.hg, ag: g.ag };
+  if (g.htH !== undefined) m.htHome = g.htH;
+  if (g.htA !== undefined) m.htAway = g.htA;
+  if (g.corners !== undefined) m.corners = g.corners;
+  if (g.cards !== undefined) m.cards = g.cards;
+  return m;
+};
+
+type Cand = { label: string; val: (g: Game) => boolean | undefined };
+const lineCand = (name: string, n: (g: Game) => number | undefined, over: boolean, l: number): Cand => ({
+  label: `${over ? 'Over' : 'Under'} ${l} ${name}`,
+  val: (g) => { const v = n(g); return v === undefined ? undefined : over ? v > l : v < l; },
+});
+const goalsOf = (g: Game): number => g.hg + g.ag;
+const cornersOf = (g: Game): number | undefined => g.corners;
+const cardsOf = (g: Game): number | undefined => g.cards;
+const CANDS: Cand[] = [
+  lineCand('goals', goalsOf, true, 2.5), lineCand('goals', goalsOf, false, 2.5), lineCand('goals', goalsOf, true, 1.5),
+  lineCand('goals', goalsOf, false, 3.5), lineCand('goals', goalsOf, false, 4.5),
+  { label: 'BTTS yes', val: (g) => g.hg > 0 && g.ag > 0 },
+  { label: 'BTTS no', val: (g) => !(g.hg > 0 && g.ag > 0) },
+  ...[9.5, 10.5, 11.5].flatMap((l) => [lineCand('corners', cornersOf, true, l), lineCand('corners', cornersOf, false, l)]),
+  ...[3.5, 4.5, 5.5].flatMap((l) => [lineCand('cards', cardsOf, true, l), lineCand('cards', cardsOf, false, l)]),
+];
+
+// count-type streaks: share of games (with data) hitting the candidate, kept at >= 70% over >= 5 games
+function countStreaks(games: Game[]): Streak[] {
+  const out: Streak[] = [];
+  for (const c of CANDS) {
+    let hit = 0, n = 0;
+    for (const g of games) {
+      const v = c.val(g);
+      if (v === undefined) continue;
+      n++;
+      if (v) hit++;
+    }
+    if (n >= 5 && hit / n >= 0.7) out.push({ label: c.label, hit, of: n });
+  }
+  return out;
+}
+
+// run-type streaks from the newest game; games are newest first, mine(g) = the team is the home side of g
+function runStreaks(games: Game[], mine: (g: Game) => boolean, prefix: string, withClean: boolean): Streak[] {
+  const gf = (g: Game): number => (mine(g) ? g.hg : g.ag);
+  const ga = (g: Game): number => (mine(g) ? g.ag : g.hg);
+  const run = (ok: (g: Game) => boolean): number => {
+    let n = 0;
+    for (const g of games) { if (!ok(g)) break; n++; }
+    return n;
+  };
+  const out: Streak[] = [];
+  const nl = run((g) => gf(g) >= ga(g));
+  if (nl >= 3) out.push({ label: `${prefix}No losses`, hit: nl, of: nl });
+  if (withClean) {
+    const nc = run((g) => ga(g) >= 1);
+    if (nc >= 3) out.push({ label: 'No clean sheet', hit: nc, of: nc });
+  }
+  return out;
+}
+
+const best5 = (xs: Streak[]): Streak[] => [...xs].sort((a, b) => b.hit / b.of - a.hit / a.of || b.of - a.of).slice(0, 5);
+
+export async function loadMatchesPanel(competition: Competition, home: string, away: string): Promise<MatchesPanel | null> {
   try {
     const path = competition.csvPath;
     if (!path || path.startsWith('new/')) return null;
-    const files = [0, 1, 2, 3]
+    const files = [0, 1, 2, 3, 4, 5, 6, 7, 8]
       .map((k) => ({ k, p: k === 0 ? path : seasonPath(path, k) }))
       .filter((f): f is { k: number; p: string } => f.p !== null);
-    const sets = await Promise.all(files.map(async (f) => ({
-      p: f.p, rows: played((await fetchRows(f.p, f.k === 0 ? SIX_HOURS : DAY)) ?? []),
-    })));
-    const found: { t: number; m: H2HMeeting }[] = [];
-    for (const s of sets) {
-      const sm = s.p.match(/^mmz4281\/(\d{2})(\d{2})\//);
-      const season = sm ? `${sm[1]}/${sm[2]}` : '';
-      for (const r of s.rows) {
-        const h = r.HomeTeam || '', a = r.AwayTeam || '';
-        if (!((sameTeam(h, home) && sameTeam(a, away)) || (sameTeam(h, away) && sameTeam(a, home)))) continue;
-        const t = dayMs(r.Date), hg = numOrUndef(r.FTHG), ag = numOrUndef(r.FTAG);
-        if (t === null || hg === undefined || ag === undefined) continue;
-        const m: H2HMeeting = { date: new Date(t).toISOString().slice(0, 10), season, home: h, away: a, hg, ag };
-        const htH = numOrUndef(r.HTHG), htA = numOrUndef(r.HTAG);
-        if (htH !== undefined) m.htHome = htH;
-        if (htA !== undefined) m.htAway = htA;
-        const hc = numOrUndef(r.HC), ac = numOrUndef(r.AC);
-        if (hc !== undefined && ac !== undefined) m.corners = hc + ac;
-        const hy = numOrUndef(r.HY), ay = numOrUndef(r.AY);
-        if (hy !== undefined && ay !== undefined) m.cards = hy + ay + (numOrUndef(r.HR) ?? 0) + (numOrUndef(r.AR) ?? 0);
-        found.push({ t, m });
+    const sets: Game[][] = await Promise.all(files.map(async (f) =>
+      played((await fetchRows(f.p, f.k === 0 ? SIX_HOURS : DAY)) ?? []).map(toGame).filter((g): g is Game => g !== null)));
+    const newest = (xs: Game[]): Game[] => [...xs].sort((x, y) => y.t - x.t);
+
+    // head to head: teamA = home, teamB = away of the analysed fixture, any venue
+    const aHome = (g: Game): boolean => sameTeam(g.home, home);
+    const meets = newest(([] as Game[]).concat(...sets).filter((g) =>
+      (sameTeam(g.home, home) && sameTeam(g.away, away)) || (sameTeam(g.home, away) && sameTeam(g.away, home)))).slice(0, 10);
+    let h2h: MatchesPanel['h2h'] = null;
+    if (meets.length >= 1) {
+      let winsA = 0, draws = 0, winsB = 0;
+      for (const g of meets) {
+        const a = aHome(g) ? g.hg : g.ag, b = aHome(g) ? g.ag : g.hg;
+        if (a > b) winsA++; else if (a < b) winsB++; else draws++;
       }
+      h2h = {
+        meetings: meets.map(toMeeting), winsA, draws, winsB, teamA: home, teamB: away,
+        streaks: best5([
+          ...runStreaks(meets, aHome, `${home}: `, false),
+          ...runStreaks(meets, (g) => !aHome(g), `${away}: `, false),
+          ...countStreaks(meets),
+        ]),
+      };
     }
-    found.sort((x, y) => y.t - x.t);
-    const meetings = found.slice(0, 3).map((f) => f.m);
-    if (meetings.length < 1) return null;
-    const tally = (vals: number[], lines: number[]): { line: number; over: number }[] =>
-      vals.length ? lines.map((line) => ({ line, over: vals.filter((v) => v > line).length })) : [];
-    const corners = meetings.filter((m) => m.corners !== undefined).map((m) => m.corners as number);
-    const cards = meetings.filter((m) => m.cards !== undefined).map((m) => m.cards as number);
-    return {
-      meetings,
-      goals: tally(meetings.map((m) => m.hg + m.ag), [0.5, 1.5, 2.5, 3.5, 4.5]),
-      btts: meetings.filter((m) => m.hg > 0 && m.ag > 0).length,
-      corners: tally(corners, [8.5, 9.5, 10.5, 11.5, 12.5]),
-      cards: tally(cards, [2.5, 3.5, 4.5, 5.5, 6.5]),
-    };
+
+    // form: each club's last 10 played games, current season then prior
+    const recent = newest(([] as Game[]).concat(sets[0] ?? [], sets[1] ?? []));
+    const form: FormBlock[] = [];
+    for (const team of [home, away]) {
+      const games = recent.filter((g) => sameTeam(g.home, team) || sameTeam(g.away, team)).slice(0, 10);
+      const streaks = best5([...runStreaks(games, (g) => sameTeam(g.home, team), '', true), ...countStreaks(games)]);
+      if (streaks.length > 0) form.push({ team, streaks });
+    }
+
+    if (!h2h && form.length === 0) return null;
+    return { h2h, form };
   } catch {
     return null;
   }

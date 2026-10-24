@@ -1,5 +1,8 @@
 import { bestPicks } from '@/lib/best';
 import type { AllowedLines, AllowedRange } from '@/lib/best';
+import { getCompetition } from '@/lib/registry';
+import { loadMatchesPanel, loadTeamStatsAnywhere } from '@/lib/sources/csv';
+import type { MatchesPanel } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,6 +37,25 @@ const allowedOf = (v: unknown): AllowedLines | null | undefined => {
   return goals && firsthalf && secondhalf && corners && cards ? { goals, firsthalf, secondhalf, corners, cards } : null;
 };
 
+// Display-only Matches / H2H panel for the typed match. Never throws; null means "leave it out".
+async function matchesFor(match: string, cid: string): Promise<MatchesPanel | null> {
+  try {
+    const comp = getCompetition(cid);
+    if (!comp || comp.type === 'national') return null;
+    const parts = match.split(/\s+(?:vs\.?|v|-|–|—)\s+/i).map((s) => s.trim()).filter(Boolean);
+    if (parts.length !== 2) return null;
+    const [home, away] = parts;
+    // same rule as analyze: stats come from the league itself, or from wherever the home team was found
+    const statsComp = comp.csvPath ? comp : (await loadTeamStatsAnywhere(home))?.competition ?? null;
+    if (!statsComp || !statsComp.csvPath || statsComp.csvPath.startsWith('new/')) return null;
+    return await loadMatchesPanel(statsComp, home, away);
+  } catch {
+    return null;
+  }
+}
+const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+  Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+
 export async function POST(req: Request): Promise<Response> {
   const b = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!b || typeof b !== 'object' || Array.isArray(b)) return bad();
@@ -47,7 +69,12 @@ export async function POST(req: Request): Promise<Response> {
   const mp = b.maxProbability;
   if (allowed === null || (mp !== undefined && mp !== null && (typeof mp !== 'number' || !(mp >= 0.5 && mp <= 1)))) return bad();
   try {
-    return json(await bestPicks(match, cid, typeof m0 === 'string' ? m0.trim() || undefined : undefined, allowed, typeof mp === 'number' ? mp : undefined));
+    // the panel runs in parallel with the picks and can never change them
+    const [res, matches] = await Promise.all([
+      bestPicks(match, cid, typeof m0 === 'string' ? m0.trim() || undefined : undefined, allowed, typeof mp === 'number' ? mp : undefined),
+      withTimeout(matchesFor(match, cid), 12000, null),
+    ]);
+    return json(matches ? { ...res, matches } : res);
   } catch (e) {
     return fail(e);
   }

@@ -4,18 +4,22 @@ import { useEffect, useState } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { DEFAULT_ALLOWED, loadSettings, saveSettings } from '@/lib/settings';
 import type { AllowedLines, BestResult, MenuItem } from '@/lib/best';
+import type { MatchesPanel } from '@/lib/types';
 import FixturePicker from '@/components/FixturePicker';
 import LeaguePicker from '@/components/LeaguePicker';
 import OddsCheck from '@/components/OddsCheck';
+import { MatchesPanelView } from '@/components/ResultCard';
 import { Accordion, EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
 type G = keyof AllowedLines;
 type F = keyof AllowedLines['goals'];
+type Res = BestResult & { matches?: MatchesPanel };
 const GROUPS: [G, string][] = [['goals', 'Goals'], ['firsthalf', '1st half goals'], ['secondhalf', '2nd half goals'], ['corners', 'Corners'], ['cards', 'Cards']];
 const FIELDS: [F, string][] = [['overMin', 'Over from'], ['overMax', 'Over to'], ['underMin', 'Under from'], ['underMax', 'Under to']];
 const LEAGUE_KEY = 'fa_league_v1';
 const GRID2 = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 } as const;
 const SPLIT = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 } as const;
+const TOGGLE = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: 0, background: 'none', border: 0, color: 'var(--muted)', font: 'inherit', cursor: 'pointer' } as const;
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 
 export default function BestPick({ onAnalyze, onAdd }: {
@@ -30,7 +34,8 @@ export default function BestPick({ onAnalyze, onAdd }: {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [res, setRes] = useState<BestResult | null>(null);
+  const [res, setRes] = useState<Res | null>(null);
+  const [showMatches, setShowMatches] = useState(false);
   const [used, setUsed] = useState({ match: '', comp: '' });
 
   useEffect(() => {
@@ -56,7 +61,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
   async function find() {
     const m = match.trim();
     if (!comp || !m) return setErr('Choose a league and type a match.');
-    setBusy(true); setErr(''); setRes(null);
+    setBusy(true); setErr(''); setRes(null); setShowMatches(false);
     try {
       const body: Record<string, unknown> = { match: m, competitionId: comp, allowed };
       if (mine.trim()) body.mine = mine.trim();
@@ -64,7 +69,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
       const r = await fetch('/api/best', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => null);
       if (!r.ok || !d) throw new Error((d && d.error) || `Request failed (${r.status})`);
-      setRes(d as BestResult); setUsed({ match: m, comp });
+      setRes(d as Res); setUsed({ match: m, comp });
     } catch (e) { setErr(e instanceof Error ? e.message : 'Request failed'); }
     setBusy(false);
   }
@@ -132,6 +137,15 @@ export default function BestPick({ onAnalyze, onAdd }: {
         {res && (res.top.length === 0 ? <EmptyState title="No pick reaches 55%" body={res.note} /> : (
           <>
             <div className="muted">{res.basis}</div>
+            {res.matches && (
+              <div className="card stack">
+                <button type="button" aria-expanded={showMatches} onClick={() => setShowMatches((v) => !v)} style={TOGGLE}>
+                  <span className="eyebrow" style={{ color: 'var(--muted)' }}>Matches / H2H</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transition: 'transform .15s', transform: showMatches ? 'rotate(180deg)' : 'none' }}><path d="m6 9 6 6 6-6" /></svg>
+                </button>
+                {showMatches && <MatchesPanelView m={res.matches} />}
+              </div>
+            )}
             {res.mine && card(res.mine, true)}
             <Section title="Top picks">{res.top.slice(0, 3).map((it) => card(it, false))}</Section>
             <div className="muted">{res.note}</div>

@@ -1,7 +1,7 @@
 import { getCompetition } from '@/lib/registry';
 import { parseQuery } from '@/lib/parse';
 import { getOrSet } from '@/lib/cache';
-import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee, loadStrengths, loadFixtureReferee, loadH2H } from '@/lib/sources/csv';
+import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee, loadStrengths, loadFixtureReferee, loadMatchesPanel } from '@/lib/sources/csv';
 import { loadIntlTeamStats, loadIntlLeagueAvg } from '@/lib/sources/intl';
 import { getFixtures, getTable } from '@/lib/sources/fd';
 import { getLineupsAndInjuries, getRecentEvents } from '@/lib/sources/apifootball';
@@ -15,7 +15,7 @@ import { safestLine as pickSafestLine } from '@/lib/ladder';
 import { computeFlags } from '@/lib/flags';
 import { buildNeeds } from '@/lib/needs';
 import { adjust } from '@/lib/ai';
-import type { Analysis, BaseResult, Competition, Flag, GapFacts, H2HMeeting, H2HSummary, LadderRow, MarketKind, MatchData, ParsedQuery, TeamStats } from '@/lib/types';
+import type { Analysis, BaseResult, Competition, Flag, GapFacts, LadderRow, MarketKind, MatchData, ParsedQuery, TeamStats } from '@/lib/types';
 
 type Events = { goalMinutes: number[]; fhSubRate: number } | null;
 type Fetched = { data: MatchData; statsComp: Competition };
@@ -126,31 +126,6 @@ function runModel(data: MatchData): BaseResult | null {
   }
 }
 
-// Display-only: how many past meetings hit the user's side. Only goals total, BTTS, corners and cards (with a line) get a verdict.
-function h2hVerdict(h: H2HSummary, q: ParsedQuery, prob: number): H2HSummary['verdict'] {
-  const side = q.side;
-  let hits = 0;
-  let n = 0;
-  if (q.market === 'btts') {
-    if (side !== 'yes' && side !== 'no') return undefined;
-    for (const m of h.meetings) { n++; if ((m.hg > 0 && m.ag > 0) === (side === 'yes')) hits++; }
-  } else if (q.market === 'goals_ou' || q.market === 'corners_ou' || q.market === 'cards_ou') {
-    const line = q.line;
-    if (line === undefined || (side !== 'over' && side !== 'under')) return undefined;
-    const total = (m: H2HMeeting): number | undefined => (q.market === 'goals_ou' ? m.hg + m.ag : q.market === 'corners_ou' ? m.corners : m.cards);
-    for (const m of h.meetings) {
-      const v = total(m);
-      if (v === undefined) continue;
-      n++;
-      if (side === 'over' ? v > line : v < line) hits++;
-    }
-  } else {
-    return undefined;
-  }
-  if (n === 0) return undefined;
-  return { text: `Hit in ${hits} of ${n} ${n === 1 ? 'meeting' : 'meetings'}`, agrees: (hits * 3 >= n * 2) === (prob >= 0.5) };
-}
-
 export async function analyze(raw: string, threshold: number, gap?: GapFacts, competitionId?: string, presetQuery?: ParsedQuery): Promise<Analysis> {
   const query = presetQuery ? { ...presetQuery } : await parseQuery(raw);
   const forced = competitionId ? getCompetition(competitionId) : null;
@@ -203,17 +178,13 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
     safe: ai.probability >= threshold, safestLine: line, flags, needs: buildNeeds(data),
     sources: data.news.slice(0, 5), createdAt: new Date().toISOString(),
   };
-  // display-only head to head; any failure just leaves analysis.h2h undefined
+  // display-only matches / H2H panel; any failure just leaves analysis.matches undefined
   if (!national) {
     try {
-      const h = await loadH2H(statsCompOf.get(data) ?? competition, query.home, query.away);
-      if (h) {
-        const v = h2hVerdict(h, query, analysis.probability);
-        if (v) h.verdict = v;
-        analysis.h2h = h;
-      }
+      const m = await loadMatchesPanel(statsCompOf.get(data) ?? competition, query.home, query.away);
+      if (m) analysis.matches = m;
     } catch {
-      // h2h is optional context
+      // the panel is optional context
     }
   }
   return analysis;
