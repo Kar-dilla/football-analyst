@@ -172,6 +172,27 @@ export async function loadReferee(competition: Competition, name: string): Promi
   };
 }
 
+// ---- appointed referee for an upcoming match, read from football-data.co.uk/fixtures.csv ----
+export async function loadFixtureReferee(competition: Competition, home: string, away: string): Promise<string | null> {
+  try {
+    const path = competition.csvPath;
+    if (!path || path.startsWith('new/')) return null;
+    const div = (path.split('/').pop() || '').replace(/\.csv$/i, '');
+    if (!div) return null;
+    const rows = await getOrSet<Row[]>('fixturesref', 30 * 60 * 1000, async () => {
+      const res = await fetch('https://www.football-data.co.uk/fixtures.csv');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return parse(await res.text());
+    });
+    const hit = rows.find((r) =>
+      (r.Div || '').replace(/^\uFEFF/, '').trim() === div &&
+      sameTeam(r.HomeTeam || '', home) && sameTeam(r.AwayTeam || '', away));
+    return hit && hit.Referee ? hit.Referee.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---- team strengths: attack/defence multipliers fitted on current + prior season ----
 function dayMs(s: string | undefined): number | null {
   const m = (s || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/);

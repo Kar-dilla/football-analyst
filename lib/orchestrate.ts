@@ -1,7 +1,7 @@
 import { getCompetition } from '@/lib/registry';
 import { parseQuery } from '@/lib/parse';
 import { getOrSet } from '@/lib/cache';
-import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee, loadStrengths } from '@/lib/sources/csv';
+import { sameTeam, loadTeamStats, loadTeamStatsAnywhere, loadLeagueAvg, loadReferee, loadStrengths, loadFixtureReferee } from '@/lib/sources/csv';
 import { loadIntlTeamStats, loadIntlLeagueAvg } from '@/lib/sources/intl';
 import { getFixtures, getTable } from '@/lib/sources/fd';
 import { getLineupsAndInjuries, getRecentEvents } from '@/lib/sources/apifootball';
@@ -143,6 +143,11 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
   if (gap?.referee) {
     data.referee = await loadReferee(statsCompOf.get(data) ?? competition, gap.referee);
     if (!data.referee) data.missing.push('referee');
+  } else if (!data.referee) {
+    // no referee typed by the user: use the one appointed in fixtures.csv, if any
+    const name = await loadFixtureReferee(competition, data.query.home, data.query.away);
+    if (name) data.referee = await loadReferee(statsCompOf.get(data) ?? competition, name);
+    console.log('[referee]', name ?? 'none');
   }
   const base = runModel(data);
   if (!base) throw new Error('NO_DATA: not enough data for this market (' + market + '). Corners and cards need a league with full stats; early-goal and first-half-sub markets need API-Football data for the current season.');
