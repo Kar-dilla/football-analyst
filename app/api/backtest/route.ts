@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   try {
     const sp = new URL(req.url).searchParams;
     const k = sp.get('kind');

@@ -22,6 +22,7 @@ function makeSample(): MatchData {
 }
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   const q = new URL(req.url).searchParams.get('q');
   const sample = makeSample();
   const body: Record<string, unknown> = {

@@ -6,6 +6,7 @@ import { getFixtures, getTable } from '@/lib/sources/fd';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   const params = new URL(req.url).searchParams;
   const team = params.get('team') || 'Arsenal';
   const comp = getCompetition(params.get('comp') || 'Premier League');

@@ -24,6 +24,7 @@ const twin = (side: ParsedQuery['side']): MatchData =>
 const prob = (r: BaseResult | null) => (r ? r.probability : NaN);
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   void req;
   const ladder = goalsModel(sample)?.ladder ?? [];
   const o05 = prob(goalsModel(ask('goals_ou', 'over', 0.5)));

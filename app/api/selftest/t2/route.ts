@@ -3,6 +3,7 @@ import { callJSON } from '@/lib/llm';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   if (new URL(req.url).searchParams.get('ai') !== '1') {
     return Response.json({ skipped: true });
   }

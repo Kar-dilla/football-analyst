@@ -30,6 +30,7 @@ const DATA: MatchData = {
 const q = (p: Partial<ParsedQuery>): MatchData => ({ ...DATA, query: { ...DATA.query, ...p } });
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   void req;
   const corners = cornersCardsModel(q({ market: 'corners_ou', side: 'over', line: 8.5 }));
   const cards = cornersCardsModel(q({ market: 'cards_ou', side: 'over', line: 3.5 }));

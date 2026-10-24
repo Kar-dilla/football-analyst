@@ -6,6 +6,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   const team = (new URL(req.url).searchParams.get('team') ?? '').trim();
   if (!team) return json({ error: 'team query param required, e.g. ?team=France' }, 400);
   const [stats, leagueAvg] = await Promise.all([loadIntlTeamStats(team), loadIntlLeagueAvg()]);

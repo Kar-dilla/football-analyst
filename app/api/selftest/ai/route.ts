@@ -27,6 +27,7 @@ const DATA: MatchData = {
 const BASE: BaseResult = { market: 'corners_ou', probability: 0.7, method: 'test', sampleSize: 20 };
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   if (new URL(req.url).searchParams.get('ai') !== '1') return json({ skipped: true });
   try {
     const adjusted = await adjust(DATA, BASE, [

@@ -8,6 +8,7 @@ const json = (body: unknown, status = 200): Response =>
 const r3 = (x: number): number => Math.round(x * 1000) / 1000;
 
 export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
   try {
     const comp = new URL(req.url).searchParams.get('comp') || 'epl';
     const competition = getCompetition(comp);
