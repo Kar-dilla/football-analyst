@@ -64,15 +64,18 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     ev ? getRecentEvents(a) : Promise.resolve(null),
     wantStr && home && away ? loadStrengths(competition, home.name, away.name) : Promise.resolve(null),
   ]);
-  if (!home) missing.push('home stats');
-  if (!away) missing.push('away stats');
+  if (!home) missing.push('home stats', 'No stats found for ' + h);
+  if (!away) missing.push('away stats', 'No stats found for ' + a);
   if (!leagueAvg) missing.push('league averages');
   if (wantFx && (!fxH || !fxA)) missing.push('fixtures');
   if (wantTable && !table) missing.push('table');
   if (!lu) missing.push('injuries/lineups');
   if (ev && (!evH || !evA)) missing.push('recent events');
   if (!home || !away || !leagueAvg) {
-    if (!competition.csvPath) throw new Error('NO_DATA: no stats source for ' + competition.name + ' (teams not found in the supported leagues)');
+    if (!competition.csvPath) {
+      const notes = missing.filter((m) => m.startsWith('No stats found for'));
+      throw new Error('NO_DATA: no stats source for ' + competition.name + ' (teams not found in the supported leagues)' + (notes.length ? '. ' + notes.join('; ') : ''));
+    }
     throw new Error('NO_DATA: ' + missing.join('; '));
   }
   // both teams have fixture data but no shared upcoming day -> any news is probably about a past match

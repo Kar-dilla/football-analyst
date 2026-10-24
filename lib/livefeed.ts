@@ -20,6 +20,8 @@ const SLUGS: Record<string, string> = {
   afcon: 'caf.nations',
   championship: 'eng.2', league1: 'eng.3', league2: 'eng.4',
   scotprem: 'sco.1', scotchamp: 'sco.2', scot1: 'sco.3', scot2: 'sco.4',
+  austria: 'aut.1', switzerland: 'sui.1', denmark: 'den.1', norway: 'nor.1',
+  sweden: 'swe.1', finland: 'fin.1', ireland: 'irl.1', romania: 'rou.1',
 };
 
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);

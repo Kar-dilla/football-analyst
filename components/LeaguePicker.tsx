@@ -5,7 +5,7 @@ import { allCompetitions } from '@/lib/registry';
 import type { Competition } from '@/lib/types';
 
 // Groups shown before the plain leagues, in this order.
-const HEAD_GROUPS = ['England', 'Scotland', 'Italy', 'Spain', 'Germany', 'France'];
+const HEAD_GROUPS = ['England', 'Scotland', 'Italy', 'Spain', 'Germany', 'France', 'Austria', 'Switzerland', 'Poland', 'Denmark', 'Norway', 'Sweden', 'Finland', 'Ireland', 'Romania'];
 // Group shown after the plain leagues, and the label it is displayed with.
 const TAIL_GROUP = 'International';
 const TAIL_LABEL = 'Country';
