@@ -4,6 +4,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const NONE = 'No upcoming games found for this day. Type the match instead.';
+const NO_LIST = "Fixture list isn't available for this league. Type the match instead.";
 const NO_TOMORROW = "Tomorrow's list is not available. Type the match instead.";
 
 const json = (body: unknown, status = 200) =>
@@ -20,7 +21,7 @@ export async function GET(req: Request): Promise<Response> {
       return json({ error: 'Invalid request.' }, 400);
     }
     const { fixtures, datesSupported } = await fetchFixtures(comp, day, tz);
-    const note = fixtures.length ? '' : !datesSupported && day === 'tomorrow' ? NO_TOMORROW : NONE;
+    const note = fixtures.length ? '' : comp === 'scot2' ? NO_LIST : !datesSupported && day === 'tomorrow' ? NO_TOMORROW : NONE;
     return json({ fixtures, note });
   } catch {
     return json({ fixtures: [], note: NONE });
