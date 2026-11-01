@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { espnSlug } from '@/lib/livefeed';
-import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, buildSlips, normalizeFilters } from '@/lib/dailySlips';
+import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, buildSlips, normalizeFilters } from '@/lib/dailySlips';
 import type { DailyFilters, DailyLeg, DailySlip } from '@/lib/dailySlips';
 import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
@@ -24,6 +24,10 @@ const MARKET_LABELS: Record<string, string> = {
 };
 const pct = (x: number) => (x * 100).toFixed(1);
 const pc = (x: number) => Number((x * 100).toFixed(1));
+// Win chance of a slip as a fraction, taken from 1/odds so very small chances keep their precision.
+const winOf = (s: DailySlip) => (s.odds > 0 ? 1 / s.odds : s.probability);
+const winText = (s: DailySlip) => (winOf(s) < 0.05 ? (winOf(s) * 100).toFixed(2) : pct(s.probability));
+const oneIn = (s: DailySlip) => (winOf(s) > 0 ? Math.round(1 / winOf(s)).toLocaleString() : '');
 const num = (s: string) => (s.trim() === '' ? NaN : Number(s));
 const flip = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 const offsetsOf = (d: Days): number[] => (d.range ? Array.from({ length: d.range }, (_, i) => i) : [...(d.today ? [0] : []), ...(d.tomorrow ? [1] : [])]);
@@ -66,11 +70,13 @@ export default function DailySlips() {
     set({ days: { today: k === 'today' ? !t : t, tomorrow: k === 'tomorrow' ? !m : m, range: 0 } });
   };
   const pickRange = (n: 3 | 7) => set({ days: { today: false, tomorrow: false, range: form.days.range === n ? 0 : n } });
+  // Max legs left at its default (or empty) is sent as "not given", so a custom target above 15 can use 40 legs.
   const toFilters = (offsets: number[], tv: number): DailyFilters =>
     normalizeFilters({
       minP: num(form.minP) / 100, maxP: num(form.maxP) / 100, markets: form.markets,
       leagues: form.allLeagues ? [] : form.leagues, dayOffsets: offsets,
-      maxLegs: num(form.maxLegs), minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
+      maxLegs: form.maxLegs.trim() === '' || form.maxLegs.trim() === FORM0.maxLegs ? undefined : num(form.maxLegs),
+      minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
       targetOdds: tv, onlyTarget: form.onlyTarget, mixDays: form.mix,
     });
 
@@ -86,13 +92,22 @@ export default function DailySlips() {
     const f = toFilters(offsets, tv);
     const leagues = scannable.filter((c) => f.leagues.length === 0 || f.leagues.includes(c.id));
     const tz = -new Date().getTimezoneOffset(); // minutes east of UTC, as fetchFixtures expects
-    const legs: DailyLeg[] = [];
+    // All days share one pool: one leg per home|away (the highest probability wins).
+    const merged = new Map<string, DailyLeg>();
+    const merge = (ls: DailyLeg[]) => {
+      for (const l of ls) {
+        if (!l || typeof l.probability !== 'number') continue;
+        const k = `${l.home}|${l.away}`.trim().toLowerCase();
+        const cur = merged.get(k);
+        if (!cur || l.probability > cur.probability) merged.set(k, l);
+      }
+    };
     cancelled.current = false;
     setMsg('');
     sweep: for (let d = 0; d < offsets.length; d++) {
       for (let i = 0; i < leagues.length; i++) {
         if (cancelled.current) break sweep;
-        setProgress({ n: i + 1, m: leagues.length, found: legs.length, d: d + 1, k: offsets.length });
+        setProgress({ n: i + 1, m: leagues.length, found: merged.size, d: d + 1, k: offsets.length });
         try {
           ctl.current = new AbortController();
           const res = await fetch('/api/daily', {
@@ -103,7 +118,7 @@ export default function DailySlips() {
           });
           if (res.ok) {
             const j = (await res.json()) as { legs?: DailyLeg[] };
-            if (Array.isArray(j.legs)) legs.push(...j.legs);
+            if (Array.isArray(j.legs)) merge(j.legs);
           }
         } catch {
           // skip a league that failed or was cancelled
@@ -112,6 +127,7 @@ export default function DailySlips() {
     }
     setProgress(null);
     if (cancelled.current) { setMsg('Scan cancelled. Showing the previous result.'); return; }
+    const legs = Array.from(merged.values());
     const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, builtAt: Date.now(), filters: f };
     cache = next;
     setScan(next);
@@ -147,7 +163,7 @@ export default function DailySlips() {
           <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
             <label className="label">Min % <input type="number" inputMode="decimal" min={55} max={89} step={1} style={numBox} value={form.minP} onChange={(e) => set({ minP: e.target.value })} /></label>
             <label className="label">Max % <input type="number" inputMode="decimal" min={55} max={89} step={1} style={numBox} value={form.maxP} onChange={(e) => set({ maxP: e.target.value })} /></label>
-            <label className="label">Max legs <input type="number" inputMode="numeric" min={1} max={20} step={1} style={numBox} value={form.maxLegs} onChange={(e) => set({ maxLegs: e.target.value })} /></label>
+            <label className="label">Max legs <input type="number" inputMode="numeric" min={1} max={MAX_LEGS_LIMIT} step={1} style={numBox} value={form.maxLegs} onChange={(e) => set({ maxLegs: e.target.value })} /></label>
             <label className="label">Min fair odds per leg <input type="number" inputMode="decimal" min={1} step={0.01} style={numBox} value={form.minOdds} onChange={(e) => set({ minOdds: e.target.value })} /></label>
             <label className="label">My target odds <input type="number" inputMode="decimal" min={1.5} max={100} step={0.1} placeholder="e.g. 3.5" style={numBox} value={form.target} onChange={(e) => set({ target: e.target.value })} /></label>
           </div>
@@ -204,8 +220,9 @@ export default function DailySlips() {
               </div>
               <div className="row" style={{ gap: 24 }}>
                 <Stat label="Fair odds" value={s.odds.toFixed(2)} />
-                <Stat label="Win chance" value={`${pct(s.probability)}%`} tone={s.probability < 0.5 ? 'warn' : 'ok'} />
+                <Stat label="Win chance" value={`${winText(s)}%`} tone={s.probability < 0.5 ? 'warn' : 'ok'} />
               </div>
+              <div className="muted">About 1 in {oneIn(s)}</div>
               <div className="muted">{s.note}</div>
               <div className="label">Legs between {pc(scan.filters.minP)}% and {pc(scan.filters.maxP)}%</div>
               {s.from && s.to && <div className="label">{stamp(s.from)} to {stamp(s.to)}</div>}

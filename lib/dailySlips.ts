@@ -18,13 +18,14 @@ export interface DailyFilters {
   markets: string[];
   leagues: string[];
   day: 'today' | 'tomorrow';
-  maxLegs: number;
+  maxLegs: number;       // 1 to 50, default 20 (used by the fixed 2, 5, 10, 15 slips)
   minLegOdds: number;
   fullStatsOnly: boolean;
   targetOdds: number;    // 0 = no custom target, otherwise 1.5 to 100
   onlyTarget: boolean;   // hide the fixed 2, 5, 10, 15 cards (needs targetOdds)
   dayOffsets: number[];  // 0 = today, 1 = tomorrow, ... up to 6
   mixDays: boolean;      // true: legs from different days may share a slip
+  customMaxLegs?: number; // max legs for the 'My target odds' card (1 to 50); defaults to maxLegs, or 40 when the target is above 15 and maxLegs was not given
 }
 
 export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
@@ -50,6 +51,8 @@ export const HARD_MAX_P = 1;
 const TARGETS = [2, 5, 10, 15];
 const TARGET_MIN = 1.5;
 const TARGET_MAX = 100;
+export const MAX_LEGS_LIMIT = 50; // highest max legs a user can set
+const CUSTOM_BIG_LEGS = 40; // max legs for a custom target above 15 when max legs was left alone
 const NONE = 'No qualifying combination today';
 const NOTES: Record<number, string> = {
   2: 'About a coin flip.',
@@ -80,19 +83,24 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
     : [];
   if (dayOffsets.length === 0) dayOffsets = [r.day === 'tomorrow' ? 1 : 0];
   const t = num(r.targetOdds, 0);
+  const target = t >= TARGET_MIN && t <= TARGET_MAX ? r2(t) : 0;
+  const maxLegs = Math.round(clamp(num(r.maxLegs, D.maxLegs), 1, MAX_LEGS_LIMIT));
+  // A custom target above 15 with no max legs given gets 40 legs; an explicit customMaxLegs (e.g. from an earlier pass) always wins.
+  const customMaxLegs = Math.round(clamp(num(r.customMaxLegs, target > 15 && typeof r.maxLegs !== 'number' ? CUSTOM_BIG_LEGS : maxLegs), 1, MAX_LEGS_LIMIT));
   return {
     minP,
     maxP,
     markets: strs(r.markets, ALL_MARKETS, [...ALL_MARKETS]),
     leagues: strs(r.leagues, null, []),
     day: dayOffsets.length === 1 && dayOffsets[0] === 1 ? 'tomorrow' : 'today',
-    maxLegs: Math.round(clamp(num(r.maxLegs, D.maxLegs), 1, 20)),
+    maxLegs,
     minLegOdds: clamp(num(r.minLegOdds, D.minLegOdds), 1, 20),
     fullStatsOnly: r.fullStatsOnly === true,
-    targetOdds: t >= TARGET_MIN && t <= TARGET_MAX ? r2(t) : 0,
+    targetOdds: target,
     onlyTarget: r.onlyTarget === true,
     dayOffsets,
     mixDays: r.mixDays === true,
+    customMaxLegs,
   };
 }
 
@@ -144,6 +152,19 @@ function pick(pool: DailyLeg[], target: number, maxLegs: number): DailyLeg[] {
   return [];
 }
 
+// About how many legs pick() needs to reach the target: counts the pool highest-probability first (as pick does),
+// then extends past the end of the pool with the pool's average leg. `pool` is already sorted by probability descending.
+function legsNeeded(pool: DailyLeg[], target: number, f: DailyFilters): number {
+  const goal = Math.log(target);
+  const avg = pool.length ? pool.reduce((a, l) => a - Math.log(l.probability), 0) / pool.length : -Math.log((f.minP + f.maxP) / 2);
+  let sum = 0;
+  for (let i = 0; i < pool.length; i++) {
+    sum -= Math.log(pool[i].probability);
+    if (sum >= goal) return i + 1;
+  }
+  return pool.length + Math.max(1, Math.ceil((goal - sum) / (avg > 0 ? avg : 0.2)));
+}
+
 // Local calendar date of a kickoff ('' when the kickoff cannot be read). Runs in the browser, so it is the user's own date.
 function dayKey(iso: string): string {
   const t = new Date(iso);
@@ -153,9 +174,22 @@ function dayKey(iso: string): string {
 }
 
 function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean): DailySlip {
-  const chosen = pick(pool, target, f.maxLegs);
+  const cap = custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
+  const chosen = pick(pool, target, cap);
   const tag = { ...(day !== undefined ? { day } : {}), ...(custom ? { custom: true } : {}) };
-  if (chosen.length === 0) return { target, legs: [], odds: 0, probability: 0, note: NONE, ...tag };
+  if (chosen.length === 0) {
+    let note = NONE;
+    if (custom) {
+      const n = pool.length;
+      const m = legsNeeded(pool, target, f);
+      note = 'No qualifying combination. ' + (n < m
+        ? `Not enough qualifying legs (found ${n}, need about ${m}).`
+        : cap < m
+          ? `Max legs is too low (limit ${cap}, need about ${m}).`
+          : 'No mix of legs lands within -15% to +25% of the target.');
+    }
+    return { target, legs: [], odds: 0, probability: 0, note, ...tag };
+  }
   const ts = chosen.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
   const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
   return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: noteFor(target), ...range, ...tag };
