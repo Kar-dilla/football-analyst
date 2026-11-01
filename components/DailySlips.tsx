@@ -4,20 +4,20 @@ import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { espnSlug } from '@/lib/livefeed';
-import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, buildSlips, normalizeFilters } from '@/lib/dailySlips';
+import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, MAX_WINDOW_MS, buildSlips, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
 import type { DailyFilters, DailyLeg, DailySlip } from '@/lib/dailySlips';
 import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
 import { EmptyState, Notice, Stat } from '@/components/ui';
 
-interface Scan { slips: DailySlip[]; legs: number; builtAt: number; filters: DailyFilters }
+interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters }
 interface Days { today: boolean; tomorrow: boolean; range: 0 | 3 | 7 }
-// Form values as typed (percent for probabilities). Kept in component state only.
-interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean }
+// Form values as typed (percent for probabilities). Kept in component state only. from/to = datetime-local values (local time).
+interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string }
 // Module-level so the last scan survives switching tabs (lost only on a full page reload).
 let cache: Scan | null = null;
 
-const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false };
+const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '' };
 const MARKET_LABELS: Record<string, string> = {
   goals: 'Goals', btts: 'Both teams to score', result: 'Result', doublechance: 'Double chance',
   firsthalf: '1st half goals', secondhalf: '2nd half goals', corners: 'Corners', cards: 'Cards',
@@ -31,9 +31,15 @@ const oneIn = (s: DailySlip) => (winOf(s) > 0 ? Math.round(1 / winOf(s)).toLocal
 const num = (s: string) => (s.trim() === '' ? NaN : Number(s));
 const flip = (xs: string[], x: string) => (xs.includes(x) ? xs.filter((y) => y !== x) : [...xs, x]);
 const offsetsOf = (d: Days): number[] => (d.range ? Array.from({ length: d.range }, (_, i) => i) : [...(d.today ? [0] : []), ...(d.tomorrow ? [1] : [])]);
+const hm = (t: Date) => String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
 const stamp = (iso: string) => {
   const t = new Date(iso);
-  return t.toLocaleDateString([], { weekday: 'short' }) + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+  return t.toLocaleDateString([], { weekday: 'short' }) + ' ' + hm(t);
+};
+// 'Sat 24 Oct 15:00' in the user's local time.
+const wstamp = (iso: string) => {
+  const t = new Date(iso);
+  return t.toLocaleDateString([], { weekday: 'short' }) + ' ' + t.getDate() + ' ' + t.toLocaleDateString([], { month: 'short' }) + ' ' + hm(t);
 };
 const dayLabel = (k: string) => {
   const [y, m, d] = k.split('-').map(Number);
@@ -42,10 +48,10 @@ const dayLabel = (k: string) => {
 };
 const ROW = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 4px' } as const;
 
-function Tick({ checked, onChange, children }: { checked: boolean; onChange: () => void; children: ReactNode }) {
+function Tick({ checked, onChange, disabled, children }: { checked: boolean; onChange: () => void; disabled?: boolean; children: ReactNode }) {
   return (
-    <label className="row" style={{ gap: 6, alignItems: 'center' }}>
-      <input type="checkbox" checked={checked} onChange={onChange} />
+    <label className="row" style={{ gap: 6, alignItems: 'center', opacity: disabled ? 0.45 : 1 }}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} />
       <span>{children}</span>
     </label>
   );
@@ -71,29 +77,45 @@ export default function DailySlips() {
   };
   const pickRange = (n: 3 | 7) => set({ days: { today: false, tomorrow: false, range: form.days.range === n ? 0 : n } });
   // Max legs left at its default (or empty) is sent as "not given", so a custom target above 15 can use 40 legs.
-  const toFilters = (offsets: number[], tv: number): DailyFilters =>
+  const toFilters = (offsets: number[], tv: number, win?: { from: string; to: string }): DailyFilters =>
     normalizeFilters({
       minP: num(form.minP) / 100, maxP: num(form.maxP) / 100, markets: form.markets,
       leagues: form.allLeagues ? [] : form.leagues, dayOffsets: offsets,
       maxLegs: form.maxLegs.trim() === '' || form.maxLegs.trim() === FORM0.maxLegs ? undefined : num(form.maxLegs),
       minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
       targetOdds: tv, onlyTarget: form.onlyTarget, mixDays: form.mix,
+      from: win?.from, to: win?.to,
     });
 
   async function run() {
     if (progress) return;
-    const offsets = offsetsOf(form.days);
     const tv = form.target.trim() === '' ? 0 : Number(form.target);
-    if (offsets.length === 0) { setMsg('Tick at least one day.'); return; }
+    const tz = -new Date().getTimezoneOffset(); // minutes east of UTC, as fetchFixtures expects
+    // Custom window: converted from the user's local time to ISO UTC.
+    let win: { from: string; to: string } | undefined;
+    const hasF = form.from.trim() !== '';
+    const hasT = form.to.trim() !== '';
+    if (hasF || hasT) {
+      if (!(hasF && hasT)) { setMsg('Fill in both From and To, or clear the window.'); return; }
+      const a = new Date(form.from).getTime();
+      const b = new Date(form.to).getTime();
+      if (!Number.isFinite(a) || !Number.isFinite(b)) { setMsg('Check the From and To dates.'); return; }
+      if (a >= b) { setMsg('From must be before To.'); return; }
+      if (b <= Date.now()) { setMsg('To must be in the future.'); return; }
+      if (b - a > MAX_WINDOW_MS) { setMsg('The window can be 7 days at most.'); return; }
+      win = { from: new Date(a).toISOString(), to: new Date(b).toISOString() };
+    }
+    const offsets = win ? windowOffsets(win.from, win.to, tz) : offsetsOf(form.days);
+    if (offsets.length === 0) { setMsg(win ? 'No games kick off in this window' : 'Tick at least one day.'); return; }
     if (!form.allLeagues && form.leagues.length === 0) { setMsg('Tick at least one league.'); return; }
     if (form.markets.length === 0) { setMsg('Tick at least one market.'); return; }
     if (tv !== 0 && !(tv >= 1.5 && tv <= 100)) { setMsg('My target odds must be between 1.5 and 100.'); return; }
     if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return; }
-    const f = toFilters(offsets, tv);
+    const f = toFilters(offsets, tv, win);
     const leagues = scannable.filter((c) => f.leagues.length === 0 || f.leagues.includes(c.id));
-    const tz = -new Date().getTimezoneOffset(); // minutes east of UTC, as fetchFixtures expects
     // All days share one pool: one leg per home|away (the highest probability wins).
     const merged = new Map<string, DailyLeg>();
+    let games = 0;
     const merge = (ls: DailyLeg[]) => {
       for (const l of ls) {
         if (!l || typeof l.probability !== 'number') continue;
@@ -113,12 +135,13 @@ export default function DailySlips() {
           const res = await fetch('/api/daily', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ competitionId: leagues[i].id, tz, filters: f, dayOffset: offsets[d] }),
+            body: JSON.stringify({ competitionId: leagues[i].id, tz, filters: f, dayOffset: offsets[d], ...(win ?? {}) }),
             signal: ctl.current.signal,
           });
           if (res.ok) {
-            const j = (await res.json()) as { legs?: DailyLeg[] };
+            const j = (await res.json()) as { legs?: DailyLeg[]; games?: number };
             if (Array.isArray(j.legs)) merge(j.legs);
+            if (typeof j.games === 'number') games += j.games;
           }
         } catch {
           // skip a league that failed or was cancelled
@@ -128,7 +151,7 @@ export default function DailySlips() {
     setProgress(null);
     if (cancelled.current) { setMsg('Scan cancelled. Showing the previous result.'); return; }
     const legs = Array.from(merged.values());
-    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, builtAt: Date.now(), filters: f };
+    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f };
     cache = next;
     setScan(next);
   }
@@ -149,8 +172,11 @@ export default function DailySlips() {
 
   const numBox = { width: 72 } as const;
   const dy = form.days;
-  const buildLabel = dy.range ? `Build slips for the next ${dy.range} days` : dy.tomorrow && !dy.today ? "Build tomorrow's slips" : dy.tomorrow ? 'Build slips for today and tomorrow' : "Build today's slips";
+  const win = form.from.trim() !== '' && form.to.trim() !== '';
+  const buildLabel = win ? 'Build slips for this window' : dy.range ? `Build slips for the next ${dy.range} days` : dy.tomorrow && !dy.today ? "Build tomorrow's slips" : dy.tomorrow ? 'Build slips for today and tomorrow' : "Build today's slips";
   const todayOnly = !scan || (scan.filters.dayOffsets.length === 1 && scan.filters.dayOffsets[0] === 0);
+  const winFrom = scan?.filters.from;
+  const winTo = scan?.filters.to;
   return (
     <div className="card stack">
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -170,12 +196,19 @@ export default function DailySlips() {
           <Tick checked={form.onlyTarget} onChange={() => set({ onlyTarget: !form.onlyTarget })}>Only my target</Tick>
           <div className="label">Days</div>
           <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
-            <Tick checked={dy.today} onChange={() => pickDay('today')}>Today</Tick>
-            <Tick checked={dy.tomorrow} onChange={() => pickDay('tomorrow')}>Tomorrow</Tick>
-            <Tick checked={dy.range === 3} onChange={() => pickRange(3)}>Next 3 days</Tick>
-            <Tick checked={dy.range === 7} onChange={() => pickRange(7)}>Next 7 days</Tick>
+            <Tick disabled={win} checked={dy.today} onChange={() => pickDay('today')}>Today</Tick>
+            <Tick disabled={win} checked={dy.tomorrow} onChange={() => pickDay('tomorrow')}>Tomorrow</Tick>
+            <Tick disabled={win} checked={dy.range === 3} onChange={() => pickRange(3)}>Next 3 days</Tick>
+            <Tick disabled={win} checked={dy.range === 7} onChange={() => pickRange(7)}>Next 7 days</Tick>
           </div>
           <Tick checked={form.mix} onChange={() => set({ mix: !form.mix })}>Mix games across days</Tick>
+          <div className="label">Custom window</div>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <label className="label">From <input type="datetime-local" value={form.from} onChange={(e) => set({ from: e.target.value })} /></label>
+            <label className="label">To <input type="datetime-local" value={form.to} onChange={(e) => set({ to: e.target.value })} /></label>
+            <button type="button" className="btn ghost" onClick={() => set({ from: '', to: '' })}>Clear window</button>
+          </div>
+          {win && <div className="muted">Using custom window</div>}
           <div className="label">Markets</div>
           <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
             {ALL_MARKETS.map((m) => (
@@ -203,10 +236,13 @@ export default function DailySlips() {
       </div>
       {progress && <div className="muted">Scanning {progress.n} of {progress.m} leagues{progress.k > 1 ? `, day ${progress.d} of ${progress.k}` : ''}... {progress.found} matches found</div>}
       {msg && <Notice tone="info">{msg}</Notice>}
-      {scan && scan.legs === 0 && <EmptyState title={`No games with qualifying picks ${todayOnly ? 'today' : 'for these days'}`} />}
+      {scan && scan.legs === 0 && (
+        <EmptyState title={winFrom ? (scan.games === 0 ? 'No games kick off in this window' : 'No games with qualifying picks in this window') : `No games with qualifying picks ${todayOnly ? 'today' : 'for these days'}`} />
+      )}
       {scan && scan.legs > 0 && scan.slips.map((s) => (
         <div key={`${s.day ?? ''}-${s.target}`} className="card flat stack">
           {s.day ? <div className="label">{dayLabel(s.day)}</div> : null}
+          {winFrom && winTo ? <div className="label">Games from {wstamp(winFrom)} to {wstamp(winTo)}</div> : null}
           {s.legs.length === 0 ? (
             <>
               <div className="h2">Target ~{s.target}</div>

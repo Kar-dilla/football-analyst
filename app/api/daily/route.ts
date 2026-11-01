@@ -3,7 +3,7 @@ import { bestPicks } from '@/lib/best';
 import { espnSlug, fetchFixtures } from '@/lib/livefeed';
 import type { Fixture } from '@/lib/livefeed';
 import { getCompetition } from '@/lib/registry';
-import { HARD_MAX_P, HARD_MIN_P, normalizeFilters } from '@/lib/dailySlips';
+import { HARD_MAX_P, HARD_MIN_P, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
 import type { DailyLeg } from '@/lib/dailySlips';
 
 export const maxDuration = 60;
@@ -25,7 +25,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 export async function POST(req: Request) {
-  let body: { competitionId?: unknown; tz?: unknown; filters?: unknown; dayOffset?: unknown } = {};
+  let body: { competitionId?: unknown; tz?: unknown; filters?: unknown; dayOffset?: unknown; from?: unknown; to?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -36,11 +36,16 @@ export async function POST(req: Request) {
   if (!competitionId || !espnSlug(competitionId) || !Number.isFinite(tz) || Math.abs(tz) > 840) {
     return NextResponse.json({ legs: [], error: 'Bad request' }, { status: 400 });
   }
-  const f = normalizeFilters(body.filters); // bad or missing fields fall back to defaults
+  // Top-level from/to (ISO UTC) win over filters.from/to. An invalid or one-sided window is ignored by normalizeFilters.
+  const rawF = body.filters && typeof body.filters === 'object' ? (body.filters as Record<string, unknown>) : {};
+  const f = normalizeFilters({ ...rawF, ...(body.from !== undefined || body.to !== undefined ? { from: body.from, to: body.to } : {}) }); // bad or missing fields fall back to defaults
   const lo = Math.max(f.minP, HARD_MIN_P);
-  // The app sends one day per request (body.dayOffset) to keep each call short; without it, all of filters.dayOffsets are merged.
-  const single = typeof body.dayOffset === 'number' && Number.isInteger(body.dayOffset) && body.dayOffset >= 0 && body.dayOffset <= 6;
-  const offsets = single ? [body.dayOffset as number] : f.dayOffsets;
+  const hasWin = !!f.from && !!f.to;
+  const wFrom = hasWin ? Math.max(Date.parse(f.from as string), Date.now()) : 0; // games that have started are never returned
+  const wTo = hasWin ? Date.parse(f.to as string) : 0;
+  // The app sends one day per request (body.dayOffset) to keep each call short; without it, a window gives every day it touches, else all of filters.dayOffsets are merged.
+  const single = typeof body.dayOffset === 'number' && Number.isInteger(body.dayOffset) && body.dayOffset >= 0 && body.dayOffset <= (hasWin ? 7 : 6);
+  const offsets = single ? [body.dayOffset as number] : hasWin ? windowOffsets(f.from as string, f.to as string, tz) : f.dayOffsets;
 
   try {
     const competition = getCompetition(competitionId);
@@ -52,7 +57,8 @@ export async function POST(req: Request) {
     for (const off of offsets) {
       try {
         const { fixtures } = await fetchFixtures(competitionId, off === 1 ? 'tomorrow' : 'today', tz, off);
-        for (const fx of fixtures.slice(0, MAX_FIXTURES)) {
+        const inside = hasWin ? fixtures.filter((fx) => { const t = Date.parse(fx.kickoff); return t >= wFrom && t < wTo; }) : fixtures;
+        for (const fx of inside.slice(0, MAX_FIXTURES)) {
           const key = (fx.home + '|' + fx.away).toLowerCase();
           if (seen.has(key)) continue;
           seen.add(key);
@@ -98,7 +104,8 @@ export async function POST(req: Request) {
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker));
-    return NextResponse.json({ legs: out.filter((l): l is DailyLeg => l !== null) });
+    // games = fixtures found (inside the window when one is set), so the app can tell "no games" from "no qualifying picks"
+    return NextResponse.json({ legs: out.filter((l): l is DailyLeg => l !== null), games: list.length });
   } catch {
     return NextResponse.json({ legs: [] });
   }

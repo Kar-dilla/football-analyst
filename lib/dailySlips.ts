@@ -26,6 +26,8 @@ export interface DailyFilters {
   dayOffsets: number[];  // 0 = today, 1 = tomorrow, ... up to 6
   mixDays: boolean;      // true: legs from different days may share a slip
   customMaxLegs?: number; // max legs for the 'My target odds' card (1 to 50); defaults to maxLegs, or 40 when the target is above 15 and maxLegs was not given
+  from?: string;         // custom window start, ISO UTC. Set only when from and to are both valid (from < to, at most 7 days)
+  to?: string;           // custom window end (exclusive), ISO UTC
 }
 
 export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
@@ -52,6 +54,7 @@ const TARGETS = [2, 5, 10, 15];
 const TARGET_MIN = 1.5;
 const TARGET_MAX = 100;
 export const MAX_LEGS_LIMIT = 50; // highest max legs a user can set
+export const MAX_WINDOW_MS = 7 * 86400000; // longest custom window
 const CUSTOM_BIG_LEGS = 40; // max legs for a custom target above 15 when max legs was left alone
 const NONE = 'No qualifying combination today';
 const NOTES: Record<number, string> = {
@@ -87,6 +90,15 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
   const maxLegs = Math.round(clamp(num(r.maxLegs, D.maxLegs), 1, MAX_LEGS_LIMIT));
   // A custom target above 15 with no max legs given gets 40 legs; an explicit customMaxLegs (e.g. from an earlier pass) always wins.
   const customMaxLegs = Math.round(clamp(num(r.customMaxLegs, target > 15 && typeof r.maxLegs !== 'number' ? CUSTOM_BIG_LEGS : maxLegs), 1, MAX_LEGS_LIMIT));
+  // Custom window: both ends must parse, from < to and at most 7 days; otherwise the window is ignored.
+  const iso = (v: unknown) => {
+    if (typeof v !== 'string' || v.length > 40) return '';
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : '';
+  };
+  let from = iso(r.from);
+  let to = iso(r.to);
+  if (!from || !to || Date.parse(to) <= Date.parse(from) || Date.parse(to) - Date.parse(from) > MAX_WINDOW_MS) { from = ''; to = ''; }
   return {
     minP,
     maxP,
@@ -101,16 +113,36 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
     dayOffsets,
     mixDays: r.mixDays === true,
     customMaxLegs,
+    ...(from ? { from, to } : {}),
   };
 }
 
-// Keeps legs inside the filter range (never outside the hard limit), one per match (the highest), sorted by probability descending.
+// Day offsets (0 = today, 1 = tomorrow ...) of every calendar day, in the user's time zone, that the window [from, to) touches.
+// Days before today are dropped; at most offset 7. tzMinutes = minutes east of UTC (the same value the route receives as tz).
+export function windowOffsets(from: string, to: string, tzMinutes: number, now: number = Date.now()): number[] {
+  const a = Date.parse(from);
+  const b = Date.parse(to);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a || !Number.isFinite(tzMinutes)) return [];
+  const idx = (ms: number) => Math.floor((ms + tzMinutes * 60000) / 86400000);
+  const today = idx(now);
+  const out: number[] = [];
+  for (let o = Math.max(0, idx(a) - today); o <= Math.min(7, idx(b - 1) - today); o++) out.push(o);
+  return out;
+}
+
+// Keeps legs inside the filter range (never outside the hard limit) and the custom window, one per match (the highest), sorted by probability descending.
 function clean(legs: DailyLeg[], f: DailyFilters): DailyLeg[] {
   const lo = Math.max(f.minP, HARD_MIN_P);
+  const wf = f.from ? Date.parse(f.from) : NaN;
+  const wt = f.to ? Date.parse(f.to) : NaN;
   const best = new Map<string, DailyLeg>();
   for (const l of Array.isArray(legs) ? legs : []) {
     if (!l || typeof l.probability !== 'number' || !Number.isFinite(l.probability)) continue;
     if (l.probability < lo || l.probability > f.maxP || l.probability >= HARD_MAX_P) continue;
+    if (Number.isFinite(wf) && Number.isFinite(wt)) {
+      const k = Date.parse(l.kickoff);
+      if (!(k >= wf && k < wt)) continue;
+    }
     const key = (l.home + '|' + l.away).trim().toLowerCase();
     const cur = best.get(key);
     if (!cur || l.probability > cur.probability) best.set(key, l);
@@ -203,8 +235,8 @@ export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[
   // 'Target ~X' is the extra card; 'Only my target' replaces the four fixed cards with it.
   const targets = t > 0 && f.onlyTarget ? [t] : extra ? [...TARGETS, t] : TARGETS;
   let groups: { day?: string; pool: DailyLeg[] }[] = [{ pool }];
-  if (!f.mixDays && f.dayOffsets.length > 1) {
-    // Mix OFF over several days: one set of slips per day.
+  if (!f.mixDays && (f.dayOffsets.length > 1 || f.from)) {
+    // Mix OFF over several days, or inside a custom window: one set of slips per calendar day.
     const by = new Map<string, DailyLeg[]>();
     for (const l of pool) {
       const k = dayKey(l.kickoff);
