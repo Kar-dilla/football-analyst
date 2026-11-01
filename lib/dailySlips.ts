@@ -36,7 +36,7 @@ export const DEFAULT_FILTERS: DailyFilters = {
 };
 // Hard limit the user can never override: a leg must be >= HARD_MIN_P and < HARD_MAX_P.
 export const HARD_MIN_P = 0.55;
-export const HARD_MAX_P = 0.9;
+export const HARD_MAX_P = 1;
 
 const TARGETS = [2, 5, 10, 15];
 const NONE = 'No qualifying combination today';
@@ -60,8 +60,8 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
   const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
   const strs = (v: unknown, ok: string[] | null, d: string[]) =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && (!ok || ok.includes(x))) : d;
-  let minP = clamp(num(r.minP, D.minP), HARD_MIN_P, 0.89);
-  let maxP = clamp(num(r.maxP, D.maxP), HARD_MIN_P, 0.89);
+  let minP = clamp(num(r.minP, D.minP), HARD_MIN_P, 0.99);
+  let maxP = clamp(num(r.maxP, D.maxP), HARD_MIN_P, 0.99);
   if (minP > maxP) [minP, maxP] = [maxP, minP];
   return {
     minP,
