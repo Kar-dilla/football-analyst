@@ -9,8 +9,7 @@ import { loadMatchData } from '@/lib/orchestrate';
 import type { BaseResult, MarketKind, MatchData, ParsedQuery, Tier } from '@/lib/types';
 
 export interface MenuItem {
-  label: string; group: string; probability: number; modelProbability: number; shift: number;
-  note?: string; fairOdds: number; query: ParsedQuery;
+  label: string; group: string; probability: number; modelProbability: number; shift: number; note?: string; fairOdds: number; query: ParsedQuery;
 }
 export interface AllowedRange { overMin: number; overMax: number; underMin: number; underMax: number }
 export type AllowedLines = Record<'goals' | 'firsthalf' | 'secondhalf' | 'corners' | 'cards', AllowedRange>;
@@ -51,13 +50,14 @@ function price(data: MatchData, q: ParsedQuery): BaseResult | null {
   }
 }
 
-export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number): Promise<BestResult> {
+export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number, opts?: { skipAi?: boolean; skipNews?: boolean }): Promise<BestResult> {
   const parts = match.trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((s) => s.trim());
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('NO_DATA: Type the match as "Team A vs Team B".');
   const [home, away] = parts;
   const competition = getCompetition(competitionId);
   if (!competition) throw new Error('LEAGUE_NOT_FOUND');
   const q0: ParsedQuery = { home, away, market: 'goals_ou', side: 'over', line: 2.5, competitionId: competition.id, raw: match };
+  // NOTE: opts.skipNews is accepted here, but the news search happens inside loadMatchData (lib/orchestrate.ts).
   const data = await loadMatchData(q0, competition);
   const national = competition.type === 'national';
 
@@ -122,7 +122,7 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
   const gap = data.gap;
   const gapN = (gap?.injuries?.length ?? 0) + (gap?.expectedLineup?.length ?? 0) + (gap?.lateNews?.length ?? 0);
   let applied = false;
-  if (data.news.length > 0 || gapN > 0) {
+  if (!opts?.skipAi && (data.news.length > 0 || gapN > 0)) {
     const cap = maxProbability === undefined ? 1 : maxProbability;
     // only shortlist bets that could still land in the 55%..cap window after a max 8-point shift
     const short = items
