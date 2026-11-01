@@ -13,7 +13,7 @@ export interface MenuItem {
 }
 export interface AllowedRange { overMin: number; overMax: number; underMin: number; underMax: number }
 export type AllowedLines = Record<'goals' | 'firsthalf' | 'secondhalf' | 'corners' | 'cards', AllowedRange>;
-export interface BestResult { top: MenuItem[]; mine: MenuItem | null; basis: string; tier: Tier; note: string }
+export interface BestResult { top: MenuItem[]; mine: MenuItem | null; basis: string; tier: Tier; note: string; candidates?: MenuItem[] }
 
 type Side = NonNullable<ParsedQuery['side']>;
 type LineGroup = keyof AllowedLines;
@@ -50,7 +50,7 @@ function price(data: MatchData, q: ParsedQuery): BaseResult | null {
   }
 }
 
-export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number, opts?: { skipAi?: boolean; skipNews?: boolean }): Promise<BestResult> {
+export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number, opts?: { skipAi?: boolean; skipNews?: boolean; all?: boolean }): Promise<BestResult> {
   const parts = match.trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((s) => s.trim());
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('NO_DATA: Type the match as "Team A vs Team B".');
   const [home, away] = parts;
@@ -181,5 +181,5 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
     (top.length
       ? 'Probabilities come from team stats (Poisson model), optionally nudged by news. Bookmaker odds are not known; lines are limited to the ranges you set. Tap Analyze for the full check.'
       : 'No pick reaches 55% for this match within your allowed lines.') + mineNote;
-  return { top, mine: mineItem, basis, tier: competition.tier, note };
+  return { top, mine: mineItem, basis, tier: competition.tier, note, ...(opts?.all ? { candidates: items } : {}) };
 }
