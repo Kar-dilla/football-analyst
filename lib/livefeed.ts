@@ -209,9 +209,11 @@ export async function csvFixtures(competitionId: string, from: number, to: numbe
   }
 }
 
-export async function fetchFixtures(competitionId: string, day: 'today' | 'tomorrow', tzOffsetMinutes: number): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> {
+// dayOffset (optional): whole days after today (0 = today, 1 = tomorrow, 2 = the day after ...). When given it wins over `day`.
+export async function fetchFixtures(competitionId: string, day: 'today' | 'tomorrow', tzOffsetMinutes: number, dayOffset?: number): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> {
   const tz = Number.isFinite(tzOffsetMinutes) ? tzOffsetMinutes : 0;
-  const start = Math.floor((Date.now() + tz * 60000) / 86400000) * 86400000 - tz * 60000 + (day === 'tomorrow' ? 86400000 : 0);
+  const off = typeof dayOffset === 'number' && Number.isFinite(dayOffset) ? Math.trunc(dayOffset) : day === 'tomorrow' ? 1 : 0;
+  const start = Math.floor((Date.now() + tz * 60000) / 86400000) * 86400000 - tz * 60000 + off * 86400000;
   const end = start + 86400000;
   const viaCsv = async (flag: boolean): Promise<{ fixtures: Fixture[]; datesSupported: boolean }> => {
     const f = await csvFixtures(competitionId, Math.max(start, Date.now()), end);
@@ -227,7 +229,7 @@ export async function fetchFixtures(competitionId: string, day: 'today' | 'tomor
   let sources = done.map((g) => g.data);
   let datesSupported = true;
   if (!done.length) {
-    if (day === 'tomorrow') return viaCsv(false);
+    if (off !== 0) return viaCsv(false);
     datesSupported = false;
     try { sources = [await getOrSet<unknown>('espn:' + slug, 20000, () => fetchScoreboard(slug))]; } catch { sources = []; }
   }

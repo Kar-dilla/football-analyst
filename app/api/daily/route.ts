@@ -9,9 +9,10 @@ import type { DailyLeg } from '@/lib/dailySlips';
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
-const MAX_FIXTURES = 8;
+const MAX_FIXTURES = 8; // per league, per day
 const CONCURRENCY = 3;
 const TIMEOUT_MS = 15000;
+const DEADLINE_MS = 50000; // stop starting new matches after this, so a many-day request still answers inside maxDuration
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -24,7 +25,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 export async function POST(req: Request) {
-  let body: { competitionId?: unknown; tz?: unknown; filters?: unknown } = {};
+  let body: { competitionId?: unknown; tz?: unknown; filters?: unknown; dayOffset?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -37,16 +38,33 @@ export async function POST(req: Request) {
   }
   const f = normalizeFilters(body.filters); // bad or missing fields fall back to defaults
   const lo = Math.max(f.minP, HARD_MIN_P);
+  // The app sends one day per request (body.dayOffset) to keep each call short; without it, all of filters.dayOffsets are merged.
+  const single = typeof body.dayOffset === 'number' && Number.isInteger(body.dayOffset) && body.dayOffset >= 0 && body.dayOffset <= 6;
+  const offsets = single ? [body.dayOffset as number] : f.dayOffsets;
 
   try {
     const competition = getCompetition(competitionId);
     if (!competition) return NextResponse.json({ legs: [] });
     if (f.leagues.length > 0 && !f.leagues.includes(competitionId)) return NextResponse.json({ legs: [] });
     if (f.fullStatsOnly && String(competition.tier) !== 'A') return NextResponse.json({ legs: [] });
-    const { fixtures } = await fetchFixtures(competitionId, f.day, tz);
-    const list: Fixture[] = fixtures.slice(0, MAX_FIXTURES);
+    const seen = new Set<string>();
+    const list: Fixture[] = [];
+    for (const off of offsets) {
+      try {
+        const { fixtures } = await fetchFixtures(competitionId, off === 1 ? 'tomorrow' : 'today', tz, off);
+        for (const fx of fixtures.slice(0, MAX_FIXTURES)) {
+          const key = (fx.home + '|' + fx.away).toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          list.push(fx);
+        }
+      } catch {
+        // skip a day that failed
+      }
+    }
     const out: (DailyLeg | null)[] = new Array(list.length).fill(null);
     let next = 0;
+    const deadline = Date.now() + DEADLINE_MS;
 
     const one = async (fx: Fixture): Promise<DailyLeg | null> => {
       try {
@@ -74,7 +92,7 @@ export async function POST(req: Request) {
     };
 
     const worker = async () => {
-      while (next < list.length) {
+      while (next < list.length && Date.now() < deadline) {
         const i = next++;
         out[i] = await one(list[i]);
       }

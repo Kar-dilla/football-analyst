@@ -8,7 +8,8 @@ export interface DailyLeg {
   label: string;
   probability: number;
 }
-export interface DailySlip { target: number; legs: DailyLeg[]; odds: number; probability: number; note: string }
+// day = local date key 'YYYY-MM-DD' (set only when slips are built per day); from/to = first and last kickoff (ISO); custom = the 'My target odds' card.
+export interface DailySlip { target: number; legs: DailyLeg[]; odds: number; probability: number; note: string; day?: string; from?: string; to?: string; custom?: boolean }
 
 // User filters. Probabilities are fractions 0..1. leagues: [] means all leagues.
 export interface DailyFilters {
@@ -20,6 +21,10 @@ export interface DailyFilters {
   maxLegs: number;
   minLegOdds: number;
   fullStatsOnly: boolean;
+  targetOdds: number;    // 0 = no custom target, otherwise 1.5 to 100
+  onlyTarget: boolean;   // hide the fixed 2, 5, 10, 15 cards (needs targetOdds)
+  dayOffsets: number[];  // 0 = today, 1 = tomorrow, ... up to 6
+  mixDays: boolean;      // true: legs from different days may share a slip
 }
 
 export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
@@ -33,12 +38,18 @@ export const DEFAULT_FILTERS: DailyFilters = {
   maxLegs: 20,
   minLegOdds: 1.1,
   fullStatsOnly: false,
+  targetOdds: 0,
+  onlyTarget: false,
+  dayOffsets: [0],
+  mixDays: false,
 };
 // Hard limit the user can never override: a leg must be >= HARD_MIN_P and < HARD_MAX_P.
 export const HARD_MIN_P = 0.55;
 export const HARD_MAX_P = 1;
 
 const TARGETS = [2, 5, 10, 15];
+const TARGET_MIN = 1.5;
+const TARGET_MAX = 100;
 const NONE = 'No qualifying combination today';
 const NOTES: Record<number, string> = {
   2: 'About a coin flip.',
@@ -52,6 +63,7 @@ const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const oddsOf = (ls: DailyLeg[]) => ls.reduce((a, l) => a * (1 / l.probability), 1);
 const probOf = (ls: DailyLeg[]) => ls.reduce((a, l) => a * l.probability, 1);
+const noteFor = (t: number) => NOTES[t] ?? (t <= 3 ? NOTES[2] : t <= 7 ? NOTES[5] : NOTES[10]);
 
 // Validates unknown input; every bad field falls back to its default.
 export function normalizeFilters(raw?: unknown): DailyFilters {
@@ -63,15 +75,24 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
   let minP = clamp(num(r.minP, D.minP), HARD_MIN_P, 0.99);
   let maxP = clamp(num(r.maxP, D.maxP), HARD_MIN_P, 0.99);
   if (minP > maxP) [minP, maxP] = [maxP, minP];
+  let dayOffsets = Array.isArray(r.dayOffsets)
+    ? Array.from(new Set((r.dayOffsets as unknown[]).filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 6))).sort((a, b) => a - b)
+    : [];
+  if (dayOffsets.length === 0) dayOffsets = [r.day === 'tomorrow' ? 1 : 0];
+  const t = num(r.targetOdds, 0);
   return {
     minP,
     maxP,
     markets: strs(r.markets, ALL_MARKETS, [...ALL_MARKETS]),
     leagues: strs(r.leagues, null, []),
-    day: r.day === 'tomorrow' ? 'tomorrow' : 'today',
+    day: dayOffsets.length === 1 && dayOffsets[0] === 1 ? 'tomorrow' : 'today',
     maxLegs: Math.round(clamp(num(r.maxLegs, D.maxLegs), 1, 20)),
     minLegOdds: clamp(num(r.minLegOdds, D.minLegOdds), 1, 20),
     fullStatsOnly: r.fullStatsOnly === true,
+    targetOdds: t >= TARGET_MIN && t <= TARGET_MAX ? r2(t) : 0,
+    onlyTarget: r.onlyTarget === true,
+    dayOffsets,
+    mixDays: r.mixDays === true,
   };
 }
 
@@ -123,12 +144,40 @@ function pick(pool: DailyLeg[], target: number, maxLegs: number): DailyLeg[] {
   return [];
 }
 
+// Local calendar date of a kickoff ('' when the kickoff cannot be read). Runs in the browser, so it is the user's own date.
+function dayKey(iso: string): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
+}
+
+function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean): DailySlip {
+  const chosen = pick(pool, target, f.maxLegs);
+  const tag = { ...(day !== undefined ? { day } : {}), ...(custom ? { custom: true } : {}) };
+  if (chosen.length === 0) return { target, legs: [], odds: 0, probability: 0, note: NONE, ...tag };
+  const ts = chosen.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
+  const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
+  return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: noteFor(target), ...range, ...tag };
+}
+
 export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
   const f = normalizeFilters(filters);
   const pool = clean(legs, f);
-  return TARGETS.map((target) => {
-    const chosen = pick(pool, target, f.maxLegs);
-    if (chosen.length === 0) return { target, legs: [], odds: 0, probability: 0, note: NONE };
-    return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: NOTES[target] };
-  });
+  const t = f.targetOdds;
+  const extra = t > 0 && !TARGETS.includes(t);
+  // 'Target ~X' is the extra card; 'Only my target' replaces the four fixed cards with it.
+  const targets = t > 0 && f.onlyTarget ? [t] : extra ? [...TARGETS, t] : TARGETS;
+  let groups: { day?: string; pool: DailyLeg[] }[] = [{ pool }];
+  if (!f.mixDays && f.dayOffsets.length > 1) {
+    // Mix OFF over several days: one set of slips per day.
+    const by = new Map<string, DailyLeg[]>();
+    for (const l of pool) {
+      const k = dayKey(l.kickoff);
+      by.set(k, [...(by.get(k) ?? []), l]);
+    }
+    groups = Array.from(by.keys()).sort().map((k) => ({ day: k, pool: by.get(k) ?? [] }));
+    if (groups.length === 0) groups = [{ pool }];
+  }
+  return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, t > 0 && target === t && (f.onlyTarget || extra))));
 }
