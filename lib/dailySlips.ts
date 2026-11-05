@@ -5,6 +5,9 @@ export interface DailyLeg {
   kickoff: string;
   competitionId: string;
   competitionName: string;
+  market?: string;
+  side?: string;
+  line?: number;
   label: string;
   probability: number;
 }

@@ -91,6 +91,7 @@ export async function POST(req: Request) {
           match, home: fx.home, away: fx.away, kickoff: fx.kickoff,
           competitionId, competitionName: competition.name,
           label: best.label, probability: best.probability,
+          market: best.query.market, side: best.query.side, line: best.query.line,
         };
       } catch {
         return null;

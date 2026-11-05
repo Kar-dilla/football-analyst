@@ -8,6 +8,8 @@ import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, MAX_WINDOW_MS, bui
 import type { DailyFilters, DailyLeg, DailySlip } from '@/lib/dailySlips';
 import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
+import { fetchPrices, priceKey } from '@/lib/pricesClient';
+import type { Price } from '@/lib/pricesClient';
 import { EmptyState, Notice, Stat } from '@/components/ui';
 
 interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters }
@@ -63,6 +65,8 @@ export default function DailySlips() {
   const [progress, setProgress] = useState<{ n: number; m: number; found: number; d: number; k: number } | null>(null);
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState<Form>(FORM0);
+  const [prices, setPrices] = useState<Record<string, Price | null>>({});
+  const [pricing, setPricing] = useState(false);
   const cancelled = useRef(false);
   const ctl = useRef<AbortController | null>(null);
   const scannable = allCompetitions().filter((c) => espnSlug(c.id));
@@ -154,6 +158,12 @@ export default function DailySlips() {
     const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f };
     cache = next;
     setScan(next);
+    void loadPrices(next.slips.flatMap((s) => s.legs));
+  }
+
+  async function loadPrices(legs: DailyLeg[]) {
+    setPricing(true);
+    try { const p = await fetchPrices(legs); setPrices((o) => ({ ...o, ...p })); } finally { setPricing(false); }
   }
 
   function cancel() {
@@ -257,6 +267,12 @@ export default function DailySlips() {
               <div className="row" style={{ gap: 24 }}>
                 <Stat label="Fair odds" value={s.odds.toFixed(2)} />
                 <Stat label="Win chance" value={`${winText(s)}%`} tone={s.probability < 0.5 ? 'warn' : 'ok'} />
+                {(() => {
+                  const have = s.legs.map((l) => prices[priceKey(l)]).filter((x): x is Price => !!x);
+                  if (have.length === 0) return pricing ? <Stat label="Bookmaker odds" value="..." /> : null;
+                  const prod = have.reduce((a, x) => a * x.odd, 1);
+                  return <Stat label={have.length === s.legs.length ? 'Bookmaker odds' : `Bookmaker odds (${have.length}/${s.legs.length} legs)`} value={prod.toFixed(2)} />;
+                })()}
               </div>
               <div className="muted">About 1 in {oneIn(s)}</div>
               <div className="muted">{s.note}</div>
@@ -270,7 +286,7 @@ export default function DailySlips() {
                       <div className="label">{l.match}</div>
                       <div style={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{l.label}</div>
                     </div>
-                    <span className="num" style={{ fontWeight: 700 }}>{Math.round(l.probability * 100)}%</span>
+                    <span className="num" style={{ fontWeight: 700, textAlign: 'right' }}>{Math.round(l.probability * 100)}%{prices[priceKey(l)] && <span className="label" style={{ display: 'block' }}>@ {prices[priceKey(l)]?.odd.toFixed(2)} {prices[priceKey(l)]?.book}</span>}</span>
                   </div>
                 ))}
               </div>

@@ -1,30 +1,33 @@
-import { af, bestOdds } from "@/lib/apiFootball";
+import { NextResponse } from 'next/server';
+import { bestPrice, findFixtureId, getBookmakers } from '@/lib/oddsLookup';
+import { priceKey } from '@/lib/pricesClient';
+import type { Price, PriceReq } from '@/lib/pricesClient';
 
-export async function GET(req: Request) {
-  const p = new URL(req.url).searchParams;
-  const league = p.get("league");
-  const date = p.get("date") ?? new Date().toISOString().slice(0, 10);
-  const limit = Number(p.get("limit") ?? 5);
-  try {
-    const fx = await af("fixtures", { date }, 600);
-    let games = fx.response.filter((g: any) => g.fixture.status.short === "NS");
-    if (league) games = games.filter((g: any) => String(g.league.id) === league);
-    games = games.slice(0, limit);
-    const matches = await Promise.all(
-      games.map(async (g: any) => {
-        const o = await af("odds", { fixture: g.fixture.id }, 600);
-        return {
-          fixtureId: g.fixture.id,
-          home: g.teams.home.name,
-          away: g.teams.away.name,
-          league: g.league.name,
-          kickoff: g.fixture.date,
-          odds: o.response?.[0] ? bestOdds(o.response[0].bookmakers) : null,
-        };
-      })
-    );
-    return Response.json({ matches });
-  } catch (e: any) {
-    return Response.json({ error: e.message }, { status: 500 });
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
+export async function POST(req: Request) {
+  const b = (await req.json().catch(() => null)) as { legs?: unknown } | null;
+  const legs = Array.isArray(b?.legs)
+    ? (b!.legs as PriceReq[]).filter((l) => l && typeof l.home === 'string' && typeof l.away === 'string' && typeof l.market === 'string').slice(0, 40)
+    : [];
+  const prices: Record<string, Price | null> = {};
+  const fx = new Map<string, number | null>();
+  const deadline = Date.now() + 50000;
+  let stop = false;
+  for (const l of legs) {
+    const k = priceKey(l);
+    prices[k] = null;
+    if (stop || Date.now() > deadline) continue;
+    try {
+      const fk = (l.home + '|' + l.away).toLowerCase();
+      if (!fx.has(fk)) fx.set(fk, await findFixtureId(l.home, l.away, l.kickoff));
+      const id = fx.get(fk);
+      if (!id) continue;
+      prices[k] = bestPrice(await getBookmakers(id), l.market as string, l.side, l.line);
+    } catch {
+      stop = true; // rate limit or API error: keep what we have, cached results make the next try cheaper
+    }
   }
+  return NextResponse.json({ prices });
 }

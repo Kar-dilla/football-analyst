@@ -8,6 +8,8 @@ import type { MatchesPanel } from '@/lib/types';
 import FixturePicker from '@/components/FixturePicker';
 import LeaguePicker from '@/components/LeaguePicker';
 import OddsCheck from '@/components/OddsCheck';
+import { fetchPrices, priceKey } from '@/lib/pricesClient';
+import type { Price } from '@/lib/pricesClient';
 import { MatchesPanelView } from '@/components/ResultCard';
 import { Accordion, EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
@@ -37,6 +39,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
   const [res, setRes] = useState<Res | null>(null);
   const [showMatches, setShowMatches] = useState(false);
   const [used, setUsed] = useState({ match: '', comp: '' });
+  const [prices, setPrices] = useState<Record<string, Price | null>>({});
 
   useEffect(() => {
     const s = loadSettings(); setAllowed(s.allowed); setMaxPct(s.maxPct); setReady(true);
@@ -70,6 +73,8 @@ export default function BestPick({ onAnalyze, onAdd }: {
       const d = await r.json().catch(() => null);
       if (!r.ok || !d) throw new Error((d && d.error) || `Request failed (${r.status})`);
       setRes(d as Res); setUsed({ match: m, comp });
+      const found = [...(d.mine ? [d.mine] : []), ...(d.top ?? [])] as MenuItem[];
+      void fetchPrices(found.map((it) => ({ home: it.query.home, away: it.query.away, market: it.query.market, side: it.query.side, line: it.query.line }))).then((p) => setPrices((o) => ({ ...o, ...p })));
     } catch (e) { setErr(e instanceof Error ? e.message : 'Request failed'); }
     setBusy(false);
   }
@@ -91,7 +96,7 @@ export default function BestPick({ onAnalyze, onAdd }: {
       {!own && it.shift !== 0 && (
         <div className="muted">Stats {pct(it.modelProbability)} → after news {pct(it.probability)}{it.note ? ` — ${it.note}` : ''}</div>
       )}
-      <OddsCheck fairOdds={it.fairOdds} />
+      <OddsCheck fairOdds={it.fairOdds} live={prices[priceKey({ home: it.query.home, away: it.query.away, market: it.query.market, side: it.query.side, line: it.query.line })] ?? null} />
       <div className="row" style={{ flexWrap: 'nowrap' }}>
         <button type="button" className="btn secondary" style={{ flex: 1 }} onClick={() => onAnalyze(it, used.comp)}>Analyze</button>
         <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onAdd(it, used.match)}>Add to slip</button>
