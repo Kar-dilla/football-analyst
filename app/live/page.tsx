@@ -10,6 +10,8 @@ import { useApp } from '@/components/AppProvider';
 import LeaguePicker from '@/components/LeaguePicker';
 import LiveStats from '@/components/LiveStats';
 import OddsCheck from '@/components/OddsCheck';
+import { fetchPrices, priceKey } from '@/lib/pricesClient';
+import type { Price } from '@/lib/pricesClient';
 import { EmptyState, Field, Notice, PageHeader, Section, Skeleton, Stepper } from '@/components/ui';
 
 type FeedStats = { home: TeamLive; away: TeamLive };
