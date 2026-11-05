@@ -36,6 +36,7 @@ const ROWS: Row[] = [
   ['championship', 'Championship', 'A', 'club', '-', 'mmz4281/2627/E1.csv', 0],
   ['league1', 'League One', 'A', 'club', '-', 'mmz4281/2627/E2.csv', 0],
   ['league2', 'League Two', 'A', 'club', '-', 'mmz4281/2627/E3.csv', 0],
+  ['nationalleague', 'National League (England)', 'A', 'club', '-', 'mmz4281/2627/EC.csv', 0],
   ['scotprem', 'Scottish Premiership', 'A', 'club', '-', 'mmz4281/2627/SC0.csv', 0],
   ['scotchamp', 'Scottish Championship', 'A', 'club', '-', 'mmz4281/2627/SC1.csv', 0],
   ['scot1', 'Scottish League One', 'A', 'club', '-', 'mmz4281/2627/SC2.csv', 0],
@@ -47,6 +48,7 @@ const CAP: Record<Tier, Conf> = { A: 'high', B: 'medium', C: 'low' };
 // Dropdown group per competition id. Ids not listed here have no group.
 const GROUP: Record<string, string> = {
   epl: 'England', championship: 'England', league1: 'England', league2: 'England',
+  nationalleague: 'England',
   scotprem: 'Scotland', scotchamp: 'Scotland', scot1: 'Scotland', scot2: 'Scotland',
   seriea: 'Italy', laliga: 'Spain', bundesliga: 'Germany', ligue1: 'France',
   austria: 'Austria', switzerland: 'Switzerland', poland: 'Poland', denmark: 'Denmark',
