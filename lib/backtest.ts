@@ -252,3 +252,72 @@ export async function runBacktest(kind: 'club' | 'intl', comp?: string, limit?: 
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+type PredRow = { date: string; market: string; p: number; y: 0 | 1 };
+type RowsVariant = 'old' | 'dcMix' | 'strengthsDcMix';
+
+const prevSeason = (p: string): string =>
+  p.replace(/\/(\d{2})(\d{2})\//, (_m, a, b) => '/' + pad((Number(a) + 99) % 100) + pad((Number(b) + 99) % 100) + '/');
+
+// Same prediction path as score(), but emits one row per match and event instead of aggregating.
+function predictRows(cands: Cand[], comp: Competition, on: boolean, opts?: Opts): PredRow[] {
+  const out: PredRow[] = [];
+  for (const c of cands) {
+    const f = c.fit;
+    const side = (t: string) => ({ att: f?.att.get(t) ?? 0, def: f?.def.get(t) ?? 0, n: f?.n.get(t) ?? 0 });
+    const st = on && f ? { home: side(c.r.h), away: side(c.r.a), homeAdv: f.homeAdv, mu: f.mu } : undefined;
+    const date = new Date(c.r.d).toISOString().slice(0, 10);
+    for (const ev of EVENTS) {
+      const data = {
+        query: { home: c.r.h, away: c.r.a, raw: '', ...ev.q }, competition: comp, home: c.home, away: c.away, referee: null,
+        leagueAvg: { goals: c.lm, fhGoals: 0, corners: 0, cards: 0 }, fixtureDates: { home: [], away: [] }, news: [], missing: [], ...(st ? { strengths: st } : {}),
+      } as MatchData;
+      const res = goalsModel(data, opts);
+      if (res && Number.isFinite(res.probability)) {
+        const p = Math.round(Math.min(1, Math.max(0, res.probability)) * 1e6) / 1e6;
+        out.push({ date, market: ev.name, p, y: ev.hit(c.r.hg, c.r.ag) ? 1 : 0 });
+      }
+    }
+  }
+  return out;
+}
+
+export async function runBacktestRows(
+  comp: string,
+  seasonsBack: number,
+  limit?: number,
+  variant?: RowsVariant,
+): Promise<{ comp: string; variant: string; matches: number; rows: PredRow[] } | { error: string }> {
+  try {
+    const v = variant ?? 'strengthsDcMix';
+    if (v !== 'old' && v !== 'dcMix' && v !== 'strengthsDcMix') return { error: 'unknown variant: ' + String(v) };
+    const c = comp ? getCompetition(comp) : null;
+    if (!c) return { error: 'unknown competition: ' + (comp || '(none)') };
+    if (!c.csvPath || !c.csvPath.startsWith('mmz4281')) return { error: 'competition has no mmz4281 csvPath: ' + c.id };
+    const back = Number.isFinite(seasonsBack) ? Math.min(4, Math.max(0, Math.floor(seasonsBack))) : 0;
+    const paths: string[] = [c.csvPath];
+    for (let i = 0; i < back; i++) {
+      const last = paths[paths.length - 1];
+      const nx = prevSeason(last);
+      if (nx === last) break;
+      paths.push(nx);
+    }
+    let rows: Row[] = [];
+    const errs: string[] = [];
+    const got = await Promise.allSettled(paths.map((p) => loadRows(CLUB_BASE + p, 'club')));
+    got.forEach((g, gi) => {
+      if (g.status === 'fulfilled') rows = rows.concat(g.value.map((r) => ({ ...r, sw: gi === 0 ? 1 : 0.5 })));
+      else errs.push(String(g.reason?.message ?? g.reason));
+    });
+    const fe = errs.length ? ': ' + errs.join('; ') : '';
+    if (rows.length < 20) return { error: 'not enough data' + fe };
+    const all = walk(rows.sort((x, y) => x.d - y.d), true);
+    const lim = typeof limit === 'number' && Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 0;
+    const cands = lim ? all.slice(-lim) : all;
+    if (cands.length < 20) return { error: 'not enough testable matches (' + cands.length + ')' + fe };
+    const out = predictRows(cands, c, v === 'strengthsDcMix', v === 'old' ? { rho: 0, spread: 0 } : undefined);
+    return { comp, variant: v, matches: cands.length, rows: out };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
