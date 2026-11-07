@@ -311,23 +311,23 @@ export default function DailySlips() {
         <div className="stack">
           <span className="h2">Draw slips</span>
           {scan.drawSlips.every((s) => s.legs.length === 0) ? (
-            <div className="muted">Not enough draw legs today (found {scan.draws})</div>
+            <div className="muted">No draw legs today (found {scan.draws})</div>
           ) : scan.drawSlips.map((s) => (
             <div key={`draw-${s.day ?? ''}-${s.target}`} className="card flat stack">
               {s.day ? <div className="label">{dayLabel(s.day)}</div> : null}
               {s.legs.length === 0 ? (
                 <>
-                  <div className="h2">Target ~{s.target}</div>
+                  <div className="h2">All draws</div>
                   <div className="muted">{s.note}</div>
                 </>
               ) : (
                 <>
                   <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <span className="h2">Target ~{s.target}</span>
+                    <span className="h2">All draws</span>
                     <span className="badge">{s.legs.length} {s.legs.length === 1 ? 'leg' : 'legs'}</span>
                   </div>
                   <div className="row" style={{ gap: 24 }}>
-                    <Stat label="Fair odds" value={s.odds.toFixed(2)} />
+                    <Stat label="Total odds" value={s.odds.toFixed(2)} />
                     <Stat label="Win chance" value={`${winText(s)}%`} tone="warn" />
                   </div>
                   <div className="muted">About 1 in {oneIn(s)}</div>

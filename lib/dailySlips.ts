@@ -42,8 +42,6 @@ export const HARD_DRAW_MIN = 0.2;
 export const HARD_DRAW_MAX = 0.5;
 export const DEFAULT_DRAW_MIN = 0.25;
 export const DEFAULT_DRAW_MAX = 0.45;
-const DRAW_TARGETS = [5, 10, 15];
-const DRAW_MAX_LEGS = 10;
 const DRAW_NOTE = 'Draws are hard to predict. Low confidence.';
 // The default range is now 0.80 to 0.88 (it used to be 0.55 to 0.88).
 export const DEFAULT_FILTERS: DailyFilters = {
@@ -251,14 +249,13 @@ function dayKey(iso: string): string {
   return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
 }
 
-// draw = true builds a draw slip: max 10 legs and the draw note.
-function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean, draw?: boolean): DailySlip {
-  const cap = draw ? DRAW_MAX_LEGS : custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
+function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean): DailySlip {
+  const cap = custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
   const chosen = pick(pool, target, cap);
   const tag = { ...(day !== undefined ? { day } : {}), ...(custom ? { custom: true } : {}) };
   if (chosen.length === 0) {
     let note = NONE;
-    if (custom && !draw) {
+    if (custom) {
       const n = pool.length;
       const m = legsNeeded(pool, target, f);
       note = 'No qualifying combination. ' + (n < m
@@ -271,7 +268,7 @@ function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string
   }
   const ts = chosen.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
   const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
-  return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: draw ? DRAW_NOTE : noteFor(target), ...range, ...tag };
+  return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: noteFor(target), ...range, ...tag };
 }
 
 export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
@@ -295,22 +292,21 @@ export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[
   return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, t > 0 && target === t && (f.onlyTarget || extra))));
 }
 
-// Draw-only slips: targets 5, 10, 15 plus the custom target when set, max 10 legs, same -15% / +25% tolerance. Never mixes with normal legs.
+// Draw slips: ONE slip per day (or one for everything when days are mixed) that lists every draw leg found, with the total odds. Works with a single draw. No target, no leg cap.
 export function buildDrawSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
   const f = normalizeFilters(filters);
   const pool = cleanDraws(legs, f);
-  const t = f.targetOdds;
-  const extra = t > 0 && !DRAW_TARGETS.includes(t);
-  const targets = extra ? [...DRAW_TARGETS, t] : DRAW_TARGETS;
-  let groups: { day?: string; pool: DailyLeg[] }[] = [{ pool }];
+  if (pool.length === 0) return [];
+  const slip = (ls: DailyLeg[], day?: string): DailySlip => {
+    const sorted = [...ls].sort((a, b) => (Date.parse(a.kickoff) || 0) - (Date.parse(b.kickoff) || 0));
+    const ts = sorted.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
+    const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
+    return { target: 0, legs: sorted, odds: r2(oddsOf(sorted)), probability: r4(probOf(sorted)), note: DRAW_NOTE, ...range, ...(day !== undefined ? { day } : {}) };
+  };
   if (!f.mixDays && (f.dayOffsets.length > 1 || f.from)) {
     const by = new Map<string, DailyLeg[]>();
-    for (const l of pool) {
-      const k = dayKey(l.kickoff);
-      by.set(k, [...(by.get(k) ?? []), l]);
-    }
-    groups = Array.from(by.keys()).sort().map((k) => ({ day: k, pool: by.get(k) ?? [] }));
-    if (groups.length === 0) groups = [{ pool }];
+    for (const l of pool) { const k = dayKey(l.kickoff); by.set(k, [...(by.get(k) ?? []), l]); }
+    return Array.from(by.keys()).sort().map((k) => slip(by.get(k) ?? [], k));
   }
-  return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, extra && target === t, true)));
+  return [slip(pool)];
 }
