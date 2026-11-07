@@ -3,7 +3,7 @@ import { bestPicks } from '@/lib/best';
 import { espnSlug, fetchFixtures } from '@/lib/livefeed';
 import type { Fixture } from '@/lib/livefeed';
 import { getCompetition } from '@/lib/registry';
-import { HARD_MAX_P, HARD_MIN_P, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
+import { DEFAULT_DRAW_MAX, DEFAULT_DRAW_MIN, HARD_MAX_P, HARD_MIN_P, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
 import type { DailyLeg } from '@/lib/dailySlips';
 
 export const maxDuration = 60;
@@ -40,6 +40,8 @@ export async function POST(req: Request) {
   const rawF = body.filters && typeof body.filters === 'object' ? (body.filters as Record<string, unknown>) : {};
   const f = normalizeFilters({ ...rawF, ...(body.from !== undefined || body.to !== undefined ? { from: body.from, to: body.to } : {}) }); // bad or missing fields fall back to defaults
   const lo = Math.max(f.minP, HARD_MIN_P);
+  const dLo = f.drawMinP ?? DEFAULT_DRAW_MIN; // draw range, already clamped to 0.20 to 0.50 by normalizeFilters
+  const dHi = f.drawMaxP ?? DEFAULT_DRAW_MAX;
   const hasWin = !!f.from && !!f.to;
   const wFrom = hasWin ? Math.max(Date.parse(f.from as string), Date.now()) : 0; // games that have started are never returned
   const wTo = hasWin ? Date.parse(f.to as string) : 0;
@@ -69,16 +71,33 @@ export async function POST(req: Request) {
       }
     }
     const out: (DailyLeg | null)[] = new Array(list.length).fill(null);
+    const dOut: (DailyLeg | null)[] = new Array(list.length).fill(null); // draw legs, one per match, only filled when includeDraws is true
     let next = 0;
     const deadline = Date.now() + DEADLINE_MS;
 
-    const one = async (fx: Fixture): Promise<DailyLeg | null> => {
+    const one = async (fx: Fixture, idx: number): Promise<DailyLeg | null> => {
       try {
         const match = `${fx.home} vs ${fx.away}`;
         const res = await withTimeout(
           bestPicks(match, competitionId, undefined, undefined, undefined, { skipAi: true, skipNews: true, all: true }),
           TIMEOUT_MS,
         );
+        if (f.includeDraws) {
+          let d: (typeof res.top)[number] | null = null;
+          for (const c of res.candidates ?? []) {
+            const p = c.probability;
+            if (c.group !== 'result' || c.query.side !== 'X' || !(p >= dLo && p <= dHi)) continue;
+            if (!d || p > d.probability) d = c;
+          }
+          if (d) {
+            dOut[idx] = {
+              match, home: fx.home, away: fx.away, kickoff: fx.kickoff,
+              competitionId, competitionName: competition.name,
+              label: 'Draw', probability: d.probability,
+              market: d.query.market, side: 'X', line: d.query.line,
+            };
+          }
+        }
         let best: (typeof res.top)[number] | null = null;
         for (const c of res.candidates ?? []) {
           const p = c.probability;
@@ -101,12 +120,17 @@ export async function POST(req: Request) {
     const worker = async () => {
       while (next < list.length && Date.now() < deadline) {
         const i = next++;
-        out[i] = await one(list[i]);
+        out[i] = await one(list[i], i);
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker));
     // games = fixtures found (inside the window when one is set), so the app can tell "no games" from "no qualifying picks"
-    return NextResponse.json({ legs: out.filter((l): l is DailyLeg => l !== null), games: list.length });
+    // drawLegs is only present when includeDraws is true; the normal legs are unchanged.
+    return NextResponse.json({
+      legs: out.filter((l): l is DailyLeg => l !== null),
+      games: list.length,
+      ...(f.includeDraws ? { drawLegs: dOut.filter((l): l is DailyLeg => l !== null) } : {}),
+    });
   } catch {
     return NextResponse.json({ legs: [] });
   }

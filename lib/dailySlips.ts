@@ -31,9 +31,20 @@ export interface DailyFilters {
   customMaxLegs?: number; // max legs for the 'My target odds' card (1 to 50); defaults to maxLegs, or 40 when the target is above 15 and maxLegs was not given
   from?: string;         // custom window start, ISO UTC. Set only when from and to are both valid (from < to, at most 7 days)
   to?: string;           // custom window end (exclusive), ISO UTC
+  includeDraws?: boolean; // draw slips on or off (default false). Draw legs never mix with normal legs
+  drawMinP?: number;      // draw leg minimum probability, fraction, clamped to 0.20 to 0.50 (default 0.25)
+  drawMaxP?: number;      // draw leg maximum probability, fraction, clamped to 0.20 to 0.50 (default 0.45)
 }
 
 export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
+// Draw legs live in their own range. Hard limits the user can never override: 0.20 to 0.50.
+export const HARD_DRAW_MIN = 0.2;
+export const HARD_DRAW_MAX = 0.5;
+export const DEFAULT_DRAW_MIN = 0.25;
+export const DEFAULT_DRAW_MAX = 0.45;
+const DRAW_TARGETS = [5, 10, 15];
+const DRAW_MAX_LEGS = 10;
+const DRAW_NOTE = 'Draws are hard to predict. Low confidence.';
 // The default range is now 0.80 to 0.88 (it used to be 0.55 to 0.88).
 export const DEFAULT_FILTERS: DailyFilters = {
   minP: 0.8,
@@ -48,6 +59,9 @@ export const DEFAULT_FILTERS: DailyFilters = {
   onlyTarget: false,
   dayOffsets: [0],
   mixDays: false,
+  includeDraws: false,
+  drawMinP: DEFAULT_DRAW_MIN,
+  drawMaxP: DEFAULT_DRAW_MAX,
 };
 // Hard limit the user can never override: a leg must be >= HARD_MIN_P and < HARD_MAX_P.
 export const HARD_MIN_P = 0.55;
@@ -84,6 +98,9 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
   let minP = clamp(num(r.minP, D.minP), HARD_MIN_P, 0.99);
   let maxP = clamp(num(r.maxP, D.maxP), HARD_MIN_P, 0.99);
   if (minP > maxP) [minP, maxP] = [maxP, minP];
+  let drawMinP = clamp(num(r.drawMinP, DEFAULT_DRAW_MIN), HARD_DRAW_MIN, HARD_DRAW_MAX);
+  let drawMaxP = clamp(num(r.drawMaxP, DEFAULT_DRAW_MAX), HARD_DRAW_MIN, HARD_DRAW_MAX);
+  if (drawMinP > drawMaxP) [drawMinP, drawMaxP] = [drawMaxP, drawMinP];
   let dayOffsets = Array.isArray(r.dayOffsets)
     ? Array.from(new Set((r.dayOffsets as unknown[]).filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 6))).sort((a, b) => a - b)
     : [];
@@ -116,6 +133,9 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
     dayOffsets,
     mixDays: r.mixDays === true,
     customMaxLegs,
+    includeDraws: r.includeDraws === true,
+    drawMinP,
+    drawMaxP,
     ...(from ? { from, to } : {}),
   };
 }
@@ -142,6 +162,29 @@ function clean(legs: DailyLeg[], f: DailyFilters): DailyLeg[] {
   for (const l of Array.isArray(legs) ? legs : []) {
     if (!l || typeof l.probability !== 'number' || !Number.isFinite(l.probability)) continue;
     if (l.probability < lo || l.probability > f.maxP || l.probability >= HARD_MAX_P) continue;
+    if (Number.isFinite(wf) && Number.isFinite(wt)) {
+      const k = Date.parse(l.kickoff);
+      if (!(k >= wf && k < wt)) continue;
+    }
+    const key = (l.home + '|' + l.away).trim().toLowerCase();
+    const cur = best.get(key);
+    if (!cur || l.probability > cur.probability) best.set(key, l);
+  }
+  return Array.from(best.values()).sort(
+    (a, b) => b.probability - a.probability || a.match.localeCompare(b.match) || a.label.localeCompare(b.label),
+  );
+}
+
+// Same as clean() but for draw legs: the draw range (hard 0.20 to 0.50) instead of the normal range.
+function cleanDraws(legs: DailyLeg[], f: DailyFilters): DailyLeg[] {
+  const lo = clamp(f.drawMinP ?? DEFAULT_DRAW_MIN, HARD_DRAW_MIN, HARD_DRAW_MAX);
+  const hi = clamp(f.drawMaxP ?? DEFAULT_DRAW_MAX, HARD_DRAW_MIN, HARD_DRAW_MAX);
+  const wf = f.from ? Date.parse(f.from) : NaN;
+  const wt = f.to ? Date.parse(f.to) : NaN;
+  const best = new Map<string, DailyLeg>();
+  for (const l of Array.isArray(legs) ? legs : []) {
+    if (!l || typeof l.probability !== 'number' || !Number.isFinite(l.probability)) continue;
+    if (l.probability < lo || l.probability > hi) continue;
     if (Number.isFinite(wf) && Number.isFinite(wt)) {
       const k = Date.parse(l.kickoff);
       if (!(k >= wf && k < wt)) continue;
@@ -208,13 +251,14 @@ function dayKey(iso: string): string {
   return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
 }
 
-function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean): DailySlip {
-  const cap = custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
+// draw = true builds a draw slip: max 10 legs and the draw note.
+function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean, draw?: boolean): DailySlip {
+  const cap = draw ? DRAW_MAX_LEGS : custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
   const chosen = pick(pool, target, cap);
   const tag = { ...(day !== undefined ? { day } : {}), ...(custom ? { custom: true } : {}) };
   if (chosen.length === 0) {
     let note = NONE;
-    if (custom) {
+    if (custom && !draw) {
       const n = pool.length;
       const m = legsNeeded(pool, target, f);
       note = 'No qualifying combination. ' + (n < m
@@ -227,7 +271,7 @@ function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string
   }
   const ts = chosen.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
   const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
-  return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: noteFor(target), ...range, ...tag };
+  return { target, legs: chosen, odds: r2(oddsOf(chosen)), probability: r4(probOf(chosen)), note: draw ? DRAW_NOTE : noteFor(target), ...range, ...tag };
 }
 
 export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
@@ -249,4 +293,24 @@ export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[
     if (groups.length === 0) groups = [{ pool }];
   }
   return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, t > 0 && target === t && (f.onlyTarget || extra))));
+}
+
+// Draw-only slips: targets 5, 10, 15 plus the custom target when set, max 10 legs, same -15% / +25% tolerance. Never mixes with normal legs.
+export function buildDrawSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
+  const f = normalizeFilters(filters);
+  const pool = cleanDraws(legs, f);
+  const t = f.targetOdds;
+  const extra = t > 0 && !DRAW_TARGETS.includes(t);
+  const targets = extra ? [...DRAW_TARGETS, t] : DRAW_TARGETS;
+  let groups: { day?: string; pool: DailyLeg[] }[] = [{ pool }];
+  if (!f.mixDays && (f.dayOffsets.length > 1 || f.from)) {
+    const by = new Map<string, DailyLeg[]>();
+    for (const l of pool) {
+      const k = dayKey(l.kickoff);
+      by.set(k, [...(by.get(k) ?? []), l]);
+    }
+    groups = Array.from(by.keys()).sort().map((k) => ({ day: k, pool: by.get(k) ?? [] }));
+    if (groups.length === 0) groups = [{ pool }];
+  }
+  return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, extra && target === t, true)));
 }

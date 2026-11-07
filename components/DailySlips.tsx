@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { espnSlug } from '@/lib/livefeed';
-import { ALL_MARKETS, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, MAX_WINDOW_MS, buildSlips, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
+import { ALL_MARKETS, HARD_DRAW_MAX, HARD_DRAW_MIN, HARD_MAX_P, HARD_MIN_P, MAX_LEGS_LIMIT, MAX_WINDOW_MS, buildDrawSlips, buildSlips, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
 import type { DailyFilters, DailyLeg, DailySlip } from '@/lib/dailySlips';
 import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
@@ -12,14 +12,15 @@ import { fetchPrices, priceKey } from '@/lib/pricesClient';
 import type { Price } from '@/lib/pricesClient';
 import { EmptyState, Notice, Stat } from '@/components/ui';
 
-interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters }
+// drawSlips = draw-only slips (empty unless draw slips were on); draws = draw legs found.
+interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters; drawSlips: DailySlip[]; draws: number }
 interface Days { today: boolean; tomorrow: boolean; range: 0 | 3 | 7 }
 // Form values as typed (percent for probabilities). Kept in component state only. from/to = datetime-local values (local time).
-interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string }
+interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string; draws: boolean; drawMin: string; drawMax: string }
 // Module-level so the last scan survives switching tabs (lost only on a full page reload).
 let cache: Scan | null = null;
 
-const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '' };
+const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '', draws: false, drawMin: '25', drawMax: '45' };
 const MARKET_LABELS: Record<string, string> = {
   goals: 'Goals', btts: 'Both teams to score', result: 'Result', doublechance: 'Double chance',
   firsthalf: '1st half goals', secondhalf: '2nd half goals', corners: 'Corners', cards: 'Cards',
@@ -88,6 +89,7 @@ export default function DailySlips() {
       maxLegs: form.maxLegs.trim() === '' || form.maxLegs.trim() === FORM0.maxLegs ? undefined : num(form.maxLegs),
       minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
       targetOdds: tv, onlyTarget: form.onlyTarget, mixDays: form.mix,
+      includeDraws: form.draws, drawMinP: num(form.drawMin) / 100, drawMaxP: num(form.drawMax) / 100,
       from: win?.from, to: win?.to,
     });
 
@@ -117,15 +119,16 @@ export default function DailySlips() {
     if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return; }
     const f = toFilters(offsets, tv, win);
     const leagues = scannable.filter((c) => f.leagues.length === 0 || f.leagues.includes(c.id));
-    // All days share one pool: one leg per home|away (the highest probability wins).
+    // All days share one pool: one leg per home|away (the highest probability wins). Draw legs get their own pool.
     const merged = new Map<string, DailyLeg>();
+    const mergedD = new Map<string, DailyLeg>();
     let games = 0;
-    const merge = (ls: DailyLeg[]) => {
+    const merge = (ls: DailyLeg[], into: Map<string, DailyLeg> = merged) => {
       for (const l of ls) {
         if (!l || typeof l.probability !== 'number') continue;
         const k = `${l.home}|${l.away}`.trim().toLowerCase();
-        const cur = merged.get(k);
-        if (!cur || l.probability > cur.probability) merged.set(k, l);
+        const cur = into.get(k);
+        if (!cur || l.probability > cur.probability) into.set(k, l);
       }
     };
     cancelled.current = false;
@@ -143,8 +146,9 @@ export default function DailySlips() {
             signal: ctl.current.signal,
           });
           if (res.ok) {
-            const j = (await res.json()) as { legs?: DailyLeg[]; games?: number };
+            const j = (await res.json()) as { legs?: DailyLeg[]; games?: number; drawLegs?: DailyLeg[] };
             if (Array.isArray(j.legs)) merge(j.legs);
+            if (f.includeDraws && Array.isArray(j.drawLegs)) merge(j.drawLegs, mergedD);
             if (typeof j.games === 'number') games += j.games;
           }
         } catch {
@@ -155,7 +159,8 @@ export default function DailySlips() {
     setProgress(null);
     if (cancelled.current) { setMsg('Scan cancelled. Showing the previous result.'); return; }
     const legs = Array.from(merged.values());
-    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f };
+    const drawLegs = Array.from(mergedD.values());
+    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f, drawSlips: f.includeDraws ? buildDrawSlips(drawLegs, f) : [], draws: drawLegs.length };
     cache = next;
     setScan(next);
     void loadPrices(next.slips.flatMap((s) => s.legs));
@@ -204,6 +209,11 @@ export default function DailySlips() {
             <label className="label">My target odds <input type="number" inputMode="decimal" min={1.5} max={100} step={0.1} placeholder="e.g. 3.5" style={numBox} value={form.target} onChange={(e) => set({ target: e.target.value })} /></label>
           </div>
           <Tick checked={form.onlyTarget} onChange={() => set({ onlyTarget: !form.onlyTarget })}>Only my target</Tick>
+          <Tick checked={form.draws} onChange={() => set({ draws: !form.draws })}>Draw slips (separate)</Tick>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+            <label className="label">Draw min % <input type="number" inputMode="decimal" min={HARD_DRAW_MIN * 100} max={HARD_DRAW_MAX * 100} step={1} style={numBox} disabled={!form.draws} value={form.drawMin} onChange={(e) => set({ drawMin: e.target.value })} /></label>
+            <label className="label">Draw max % <input type="number" inputMode="decimal" min={HARD_DRAW_MIN * 100} max={HARD_DRAW_MAX * 100} step={1} style={numBox} disabled={!form.draws} value={form.drawMax} onChange={(e) => set({ drawMax: e.target.value })} /></label>
+          </div>
           <div className="label">Days</div>
           <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
             <Tick disabled={win} checked={dy.today} onChange={() => pickDay('today')}>Today</Tick>
@@ -236,6 +246,7 @@ export default function DailySlips() {
           )}
           <Tick checked={form.full} onChange={() => set({ full: !form.full })}>Full-stats leagues only</Tick>
           <div className="muted">Every leg stays at {Math.round(HARD_MIN_P * 100)}% or more and below {Math.round(HARD_MAX_P * 100)}%, whatever you enter.</div>
+          <div className="muted">Draw legs stay between {Math.round(HARD_DRAW_MIN * 100)}% and {Math.round(HARD_DRAW_MAX * 100)}% and never mix with the other legs.</div>
           <div><button type="button" className="btn ghost" onClick={() => { setForm(FORM0); setMsg(''); }}>Reset</button></div>
         </div>
       </details>
@@ -296,6 +307,51 @@ export default function DailySlips() {
           <div className="muted">Fair odds from the model, not bookmaker prices. No guarantees.</div>
         </div>
       ))}
+      {scan && scan.filters.includeDraws && (
+        <div className="stack">
+          <span className="h2">Draw slips</span>
+          {scan.drawSlips.every((s) => s.legs.length === 0) ? (
+            <div className="muted">Not enough draw legs today (found {scan.draws})</div>
+          ) : scan.drawSlips.map((s) => (
+            <div key={`draw-${s.day ?? ''}-${s.target}`} className="card flat stack">
+              {s.day ? <div className="label">{dayLabel(s.day)}</div> : null}
+              {s.legs.length === 0 ? (
+                <>
+                  <div className="h2">Target ~{s.target}</div>
+                  <div className="muted">{s.note}</div>
+                </>
+              ) : (
+                <>
+                  <div className="row" style={{ justifyContent: 'space-between' }}>
+                    <span className="h2">Target ~{s.target}</span>
+                    <span className="badge">{s.legs.length} {s.legs.length === 1 ? 'leg' : 'legs'}</span>
+                  </div>
+                  <div className="row" style={{ gap: 24 }}>
+                    <Stat label="Fair odds" value={s.odds.toFixed(2)} />
+                    <Stat label="Win chance" value={`${winText(s)}%`} tone="warn" />
+                  </div>
+                  <div className="muted">About 1 in {oneIn(s)}</div>
+                  <div className="muted">{s.note}</div>
+                  {s.from && s.to && <div className="label">{stamp(s.from)} to {stamp(s.to)}</div>}
+                  <div>
+                    {s.legs.map((l) => (
+                      <div key={l.match + l.label} style={ROW}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="label">{l.match}</div>
+                          <div style={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{l.label}</div>
+                        </div>
+                        <span className="num" style={{ fontWeight: 700, textAlign: 'right' }}>{Math.round(l.probability * 100)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="btn" onClick={() => addSlip(s)}>Add to slip</button>
+                </>
+              )}
+              <div className="muted">Fair odds from the model, not bookmaker prices. No guarantees.</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
