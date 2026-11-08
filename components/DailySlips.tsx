@@ -15,12 +15,12 @@ import { EmptyState, Notice, Stat } from '@/components/ui';
 // drawSlips = draw-only slips (empty unless draw slips were on); draws = draw legs found.
 interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters; drawSlips: DailySlip[]; draws: number }
 interface Days { today: boolean; tomorrow: boolean; range: 0 | 3 | 7 }
-// Form values as typed (percent for probabilities). Kept in component state only. from/to = datetime-local values (local time).
-interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string; draws: boolean; drawMin: string; drawMax: string }
+// Form values as typed (percent for probabilities). Kept in component state only. from/to = datetime-local values (local time). shared = max legs shared between slips.
+interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string; draws: boolean; drawMin: string; drawMax: string; shared: string }
 // Module-level so the last scan survives switching tabs (lost only on a full page reload).
 let cache: Scan | null = null;
 
-const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '', draws: false, drawMin: '25', drawMax: '45' };
+const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '', draws: false, drawMin: '25', drawMax: '45', shared: '0' };
 const MARKET_LABELS: Record<string, string> = {
   goals: 'Goals', btts: 'Both teams to score', result: 'Result', doublechance: 'Double chance',
   firsthalf: '1st half goals', secondhalf: '2nd half goals', corners: 'Corners', cards: 'Cards',
@@ -90,6 +90,7 @@ export default function DailySlips() {
       minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
       targetOdds: tv, onlyTarget: form.onlyTarget, mixDays: form.mix,
       includeDraws: form.draws, drawMinP: num(form.drawMin) / 100, drawMaxP: num(form.drawMax) / 100,
+      maxShared: num(form.shared),
       from: win?.from, to: win?.to,
     });
 
@@ -208,6 +209,8 @@ export default function DailySlips() {
             <label className="label">Min fair odds per leg <input type="number" inputMode="decimal" min={1} step={0.01} style={numBox} value={form.minOdds} onChange={(e) => set({ minOdds: e.target.value })} /></label>
             <label className="label">My target odds <input type="number" inputMode="decimal" min={1.5} max={100} step={0.1} placeholder="e.g. 3.5" style={numBox} value={form.target} onChange={(e) => set({ target: e.target.value })} /></label>
           </div>
+          <label className="label">Max legs shared between slips <input type="number" inputMode="numeric" min={0} max={10} step={1} style={numBox} value={form.shared} onChange={(e) => set({ shared: e.target.value })} /></label>
+          <div className="muted">0 = every slip uses different legs</div>
           <Tick checked={form.onlyTarget} onChange={() => set({ onlyTarget: !form.onlyTarget })}>Only my target</Tick>
           <Tick checked={form.draws} onChange={() => set({ draws: !form.draws })}>Draw slips (separate)</Tick>
           <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
@@ -287,6 +290,9 @@ export default function DailySlips() {
               </div>
               <div className="muted">About 1 in {oneIn(s)}</div>
               <div className="muted">{s.note}</div>
+              {(s.sharedWith ?? []).filter((x) => x.count > 0).map((x) => (
+                <div key={x.target} className="muted" style={{ color: '#b45309', fontWeight: 600 }}>Shares {x.count} {x.count === 1 ? 'leg' : 'legs'} with the ~{x.target} slip</div>
+              ))}
               <div className="label">Legs between {pc(scan.filters.minP)}% and {pc(scan.filters.maxP)}%</div>
               {s.from && s.to && <div className="label">{stamp(s.from)} to {stamp(s.to)}</div>}
               <div className="muted">This slip settles after the last game</div>
@@ -307,6 +313,9 @@ export default function DailySlips() {
           <div className="muted">Fair odds from the model, not bookmaker prices. No guarantees.</div>
         </div>
       ))}
+      {scan && scan.legs > 0 && (scan.filters.maxShared ?? 0) === 0 && (
+        <div className="muted">{"Each leg is used in one slip only, so one failed leg can't sink the others."}</div>
+      )}
       {scan && scan.filters.includeDraws && (
         <div className="stack">
           <span className="h2">Draw slips</span>

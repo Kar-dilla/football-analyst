@@ -12,7 +12,8 @@ export interface DailyLeg {
   probability: number;
 }
 // day = local date key 'YYYY-MM-DD' (set only when slips are built per day); from/to = first and last kickoff (ISO); custom = the 'My target odds' card.
-export interface DailySlip { target: number; legs: DailyLeg[]; odds: number; probability: number; note: string; day?: string; from?: string; to?: string; custom?: boolean }
+// sharedWith = earlier slips (same day group) that use some of the same legs; empty when nothing is shared.
+export interface DailySlip { target: number; legs: DailyLeg[]; odds: number; probability: number; note: string; day?: string; from?: string; to?: string; custom?: boolean; sharedWith?: { target: number; count: number }[] }
 
 // User filters. Probabilities are fractions 0..1. leagues: [] means all leagues.
 export interface DailyFilters {
@@ -34,6 +35,7 @@ export interface DailyFilters {
   includeDraws?: boolean; // draw slips on or off (default false). Draw legs never mix with normal legs
   drawMinP?: number;      // draw leg minimum probability, fraction, clamped to 0.20 to 0.50 (default 0.25)
   drawMaxP?: number;      // draw leg maximum probability, fraction, clamped to 0.20 to 0.50 (default 0.45)
+  maxShared?: number;     // legs a later slip may reuse from earlier slips, 0 to 10 (default 0 = every slip uses different legs)
 }
 
 export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
@@ -60,6 +62,7 @@ export const DEFAULT_FILTERS: DailyFilters = {
   includeDraws: false,
   drawMinP: DEFAULT_DRAW_MIN,
   drawMaxP: DEFAULT_DRAW_MAX,
+  maxShared: 0,
 };
 // Hard limit the user can never override: a leg must be >= HARD_MIN_P and < HARD_MAX_P.
 export const HARD_MIN_P = 0.55;
@@ -71,6 +74,7 @@ const TARGET_MAX = 100;
 export const MAX_LEGS_LIMIT = 50; // highest max legs a user can set
 export const MAX_WINDOW_MS = 7 * 86400000; // longest custom window
 const CUSTOM_BIG_LEGS = 40; // max legs for a custom target above 15 when max legs was left alone
+const MAX_SHARED_LIMIT = 10; // highest max shared legs a user can set
 const NONE = 'No qualifying combination today';
 const NOTES: Record<number, string> = {
   2: 'About a coin flip.',
@@ -85,6 +89,8 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
 const oddsOf = (ls: DailyLeg[]) => ls.reduce((a, l) => a * (1 / l.probability), 1);
 const probOf = (ls: DailyLeg[]) => ls.reduce((a, l) => a * l.probability, 1);
 const noteFor = (t: number) => NOTES[t] ?? (t <= 3 ? NOTES[2] : t <= 7 ? NOTES[5] : NOTES[10]);
+// Identity of a leg across slips: home|away|label.
+const legKey = (l: DailyLeg) => (l.home + '|' + l.away + '|' + l.label).trim().toLowerCase();
 
 // Validates unknown input; every bad field falls back to its default.
 export function normalizeFilters(raw?: unknown): DailyFilters {
@@ -108,6 +114,7 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
   const maxLegs = Math.round(clamp(num(r.maxLegs, D.maxLegs), 1, MAX_LEGS_LIMIT));
   // A custom target above 15 with no max legs given gets 40 legs; an explicit customMaxLegs (e.g. from an earlier pass) always wins.
   const customMaxLegs = Math.round(clamp(num(r.customMaxLegs, target > 15 && typeof r.maxLegs !== 'number' ? CUSTOM_BIG_LEGS : maxLegs), 1, MAX_LEGS_LIMIT));
+  const maxShared = Math.round(clamp(num(r.maxShared, 0), 0, MAX_SHARED_LIMIT));
   // Custom window: both ends must parse, from < to and at most 7 days; otherwise the window is ignored.
   const iso = (v: unknown) => {
     if (typeof v !== 'string' || v.length > 40) return '';
@@ -134,6 +141,7 @@ export function normalizeFilters(raw?: unknown): DailyFilters {
     includeDraws: r.includeDraws === true,
     drawMinP,
     drawMaxP,
+    maxShared,
     ...(from ? { from, to } : {}),
   };
 }
@@ -249,20 +257,33 @@ function dayKey(iso: string): string {
   return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate());
 }
 
-function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean): DailySlip {
+// Pool a later slip may use: every unused leg, plus up to maxShared already-used legs (highest probability first, because `pool` is sorted descending).
+function allowedPool(pool: DailyLeg[], used: Set<string>, maxShared: number): DailyLeg[] {
+  let shared = 0;
+  return pool.filter((l) => {
+    if (!used.has(legKey(l))) return true;
+    if (shared >= maxShared) return false;
+    shared++;
+    return true;
+  });
+}
+
+// restricted = earlier slips removed legs from this pool, so a failure may be down to a lack of unused legs.
+function slipFor(pool: DailyLeg[], target: number, f: DailyFilters, day?: string, custom?: boolean, restricted?: boolean): DailySlip {
   const cap = custom ? (f.customMaxLegs ?? f.maxLegs) : f.maxLegs;
   const chosen = pick(pool, target, cap);
   const tag = { ...(day !== undefined ? { day } : {}), ...(custom ? { custom: true } : {}) };
   if (chosen.length === 0) {
-    let note = NONE;
+    const n = pool.length;
+    const m = legsNeeded(pool, target, f);
+    const unused = restricted && n < m ? `Not enough unused legs (found ${n}, need about ${m}).` : '';
+    let note = unused ? `${NONE}. ${unused}` : NONE;
     if (custom) {
-      const n = pool.length;
-      const m = legsNeeded(pool, target, f);
-      note = 'No qualifying combination. ' + (n < m
+      note = 'No qualifying combination. ' + (unused || (n < m
         ? `Not enough qualifying legs (found ${n}, need about ${m}).`
         : cap < m
           ? `Max legs is too low (limit ${cap}, need about ${m}).`
-          : 'No mix of legs lands within -15% to +25% of the target.');
+          : 'No mix of legs lands within -15% to +25% of the target.'));
     }
     return { target, legs: [], odds: 0, probability: 0, note, ...tag };
   }
@@ -289,10 +310,25 @@ export function buildSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[
     groups = Array.from(by.keys()).sort().map((k) => ({ day: k, pool: by.get(k) ?? [] }));
     if (groups.length === 0) groups = [{ pool }];
   }
-  return groups.flatMap((g) => targets.map((target) => slipFor(g.pool, target, f, g.day, t > 0 && target === t && (f.onlyTarget || extra))));
+  // Slips are built in order (2, 5, 10, 15, then the custom target). Each later slip skips legs earlier slips used, except up to maxShared of them.
+  return groups.flatMap((g) => {
+    const used = new Set<string>();
+    const done: { target: number; keys: Set<string> }[] = [];
+    return targets.map((target): DailySlip => {
+      const ok = allowedPool(g.pool, used, f.maxShared ?? 0);
+      const s = slipFor(ok, target, f, g.day, t > 0 && target === t && (f.onlyTarget || extra), ok.length < g.pool.length);
+      const sharedWith = done
+        .map((d) => ({ target: d.target, count: s.legs.filter((l) => d.keys.has(legKey(l))).length }))
+        .filter((x) => x.count > 0);
+      s.legs.forEach((l) => used.add(legKey(l)));
+      done.push({ target, keys: new Set(s.legs.map(legKey)) });
+      return { ...s, sharedWith };
+    });
+  });
 }
 
 // Draw slips: ONE slip per day (or one for everything when days are mixed) that lists every draw leg found, with the total odds. Works with a single draw. No target, no leg cap.
+// Draw legs have their own pool, so they never share legs with the normal slips.
 export function buildDrawSlips(legs: DailyLeg[], filters?: DailyFilters): DailySlip[] {
   const f = normalizeFilters(filters);
   const pool = cleanDraws(legs, f);
@@ -301,7 +337,7 @@ export function buildDrawSlips(legs: DailyLeg[], filters?: DailyFilters): DailyS
     const sorted = [...ls].sort((a, b) => (Date.parse(a.kickoff) || 0) - (Date.parse(b.kickoff) || 0));
     const ts = sorted.map((l) => Date.parse(l.kickoff)).filter((x) => Number.isFinite(x));
     const range = ts.length ? { from: new Date(Math.min(...ts)).toISOString(), to: new Date(Math.max(...ts)).toISOString() } : {};
-    return { target: 0, legs: sorted, odds: r2(oddsOf(sorted)), probability: r4(probOf(sorted)), note: DRAW_NOTE, ...range, ...(day !== undefined ? { day } : {}) };
+    return { target: 0, legs: sorted, odds: r2(oddsOf(sorted)), probability: r4(probOf(sorted)), note: DRAW_NOTE, sharedWith: [], ...range, ...(day !== undefined ? { day } : {}) };
   };
   if (!f.mixDays && (f.dayOffsets.length > 1 || f.from)) {
     const by = new Map<string, DailyLeg[]>();
