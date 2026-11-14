@@ -2,7 +2,6 @@
 
 import Slip from '@/components/Slip';
 import Coverage from '@/components/Coverage';
-import DailySlips from '@/components/DailySlips';
 import { useApp } from '@/components/AppProvider';
 import { Notice, PageHeader, Section } from '@/components/ui';
 
@@ -13,9 +12,6 @@ export default function MorePage() {
       <PageHeader eyebrow="More" title="Slip and info" />
       <Section title="Slip">
         <Slip legs={slip} onRemove={removeLeg} onClear={clearSlip} />
-      </Section>
-      <Section title="Daily slips">
-        <DailySlips />
       </Section>
       <Section title="Data coverage">
         <Coverage />
