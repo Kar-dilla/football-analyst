@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import DailySlips from '@/components/DailySlips';
-import { Notice, PageHeader, Section } from '@/components/ui';
+import LiveSlips from '@/components/LiveSlips';
+import { PageHeader, Section } from '@/components/ui';
 
 type Mode = 'daily' | 'live';
 
@@ -35,7 +36,7 @@ export default function SlipsPage() {
         </Section>
       ) : (
         <Section title="Live slips">
-          <Notice tone="info">Live slips are coming next.</Notice>
+          <LiveSlips />
         </Section>
       )}
     </main>

@@ -26,7 +26,7 @@ const withEvents = (s: TeamStats | null, e: Events): TeamStats | null =>
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 const dayOf = (iso: string) => (Number.isNaN(Date.parse(iso)) ? '' : new Date(iso).toISOString().slice(0, 10));
 
-async function fetchMatch(query: ParsedQuery, competition: Competition): Promise<Fetched> {
+async function fetchMatch(query: ParsedQuery, competition: Competition, skipNews = false): Promise<Fetched> {
   const { home: h, away: a } = query;
   const missing: string[] = [];
   const national = competition.type === 'national';
@@ -58,7 +58,8 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
     wantFx ? getFixtures(competition, h) : Promise.resolve(null),
     wantFx ? getFixtures(competition, a) : Promise.resolve(null),
     wantTable ? getTable(competition) : Promise.resolve(null),
-    tavilySearch(`${h} vs ${a} team news injuries`),
+    // skipNews: no Tavily call at all, empty news list
+    skipNews ? Promise.resolve([] as Awaited<ReturnType<typeof tavilySearch>>) : tavilySearch(`${h} vs ${a} team news injuries`),
     getLineupsAndInjuries({ home: h, away: a }),
     ev ? getRecentEvents(h) : Promise.resolve(null),
     ev ? getRecentEvents(a) : Promise.resolve(null),
@@ -104,14 +105,16 @@ async function fetchMatch(query: ParsedQuery, competition: Competition): Promise
   return { data, statsComp };
 }
 
-// MatchData for one query (15-min cache per match). Used by analyze() and bestPicks().
+// MatchData for one query (15-min cache per match). Used by analyze(), bestPicks() and livePicks().
 // statsComp (where referee data lives) is parked in a WeakMap so analyze() can still load referees.
+// opts.skipNews: no news search; cached under its own ':nonews' key so it never mixes with the with-news cache.
 const statsCompOf = new WeakMap<MatchData, Competition>();
-export async function loadMatchData(query: ParsedQuery, competition: Competition): Promise<MatchData> {
+export async function loadMatchData(query: ParsedQuery, competition: Competition, opts?: { skipNews?: boolean }): Promise<MatchData> {
   const market = query.market;
+  const skipNews = opts?.skipNews === true;
   // ':ev' stops an events-less cache entry from serving window_goals / fh_subs
-  const key = `match:${competition.id}:${query.home}|${query.away}${wantsEvents(market) ? ':ev' : ''}`.toLowerCase();
-  const { data: cached, statsComp } = await getOrSet<Fetched>(key, 15 * 60 * 1000, () => fetchMatch(query, competition));
+  const key = `match:${competition.id}:${query.home}|${query.away}${wantsEvents(market) ? ':ev' : ''}${skipNews ? ':nonews' : ''}`.toLowerCase();
+  const { data: cached, statsComp } = await getOrSet<Fetched>(key, 15 * 60 * 1000, () => fetchMatch(query, competition, skipNews));
   // current query overrides the cached one (market differs per request); copy missing so the cache is never mutated
   const data: MatchData = { ...cached, query, gap: cached.gap, missing: [...cached.missing] };
   statsCompOf.set(data, statsComp);

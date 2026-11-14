@@ -1,3 +1,4 @@
+// minute / score / pricedAt are set only on live legs (minute of play, score like '1-0', ISO time the leg was priced).
 export interface DailyLeg {
   match: string;
   home: string;
@@ -10,6 +11,9 @@ export interface DailyLeg {
   line?: number;
   label: string;
   probability: number;
+  minute?: number;
+  score?: string;
+  pricedAt?: string;
 }
 // day = local date key 'YYYY-MM-DD' (set only when slips are built per day); from/to = first and last kickoff (ISO); custom = the 'My target odds' card.
 // sharedWith = earlier slips (same day group) that use some of the same legs; empty when nothing is shared.

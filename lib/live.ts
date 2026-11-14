@@ -13,7 +13,8 @@ const DEFAULT_MIN_FAIR = 1.10;
 
 export interface LiveState { minute: number; homeGoals: number; awayGoals: number; homeReds: number; awayReds: number; corners?: number; yellows?: number; stats?: { home: TeamLive; away: TeamLive } }
 export interface LiveItem { label: string; group: string; probability: number; fairOdds: number }
-export interface LiveResult { top: LiveItem[]; mine: LiveItem | null; basis: string; note: string; modelVersion: 'live-v2'; pressure?: { tilt: number; weight: number; shareHome: number } }
+// candidates = every priced item before any filtering (only when livePicks is called with opts.all).
+export interface LiveResult { top: LiveItem[]; mine: LiveItem | null; basis: string; note: string; modelVersion: 'live-v2'; pressure?: { tilt: number; weight: number; shareHome: number }; candidates?: LiveItem[] }
 
 type Test = (h: number, a: number) => boolean;
 const fair = (p: number): number => p > 0 ? Math.round(100 / p) / 100 : 0;
@@ -52,7 +53,7 @@ const testFor = (q: ParsedQuery): Test | null => {
   return null;
 };
 
-export async function livePicks(match: string, competitionId: string, state: LiveState, mine?: string, allowedGoals?: AllowedRange, maxProbability?: number, minFairOdds?: number): Promise<LiveResult> {
+export async function livePicks(match: string, competitionId: string, state: LiveState, mine?: string, allowedGoals?: AllowedRange, maxProbability?: number, minFairOdds?: number, opts?: { all?: boolean; skipNews?: boolean }): Promise<LiveResult> {
   const parts = String(match || '').trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((x) => x.trim());
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('NO_DATA: Type the match as "Team A vs Team B".');
   const home = parts[0];
@@ -64,7 +65,7 @@ export async function livePicks(match: string, competitionId: string, state: Liv
   const minFair = Math.min(3, Math.max(1.01, typeof minFairOdds === 'number' && Number.isFinite(minFairOdds) ? minFairOdds : DEFAULT_MIN_FAIR));
 
   const q0: ParsedQuery = { home, away, market: 'goals_ou', side: 'over', line: 2.5, competitionId: competition.id, raw: match };
-  const data = await loadMatchData(q0, competition);
+  const data = await loadMatchData(q0, competition, { skipNews: opts?.skipNews });
   const e = expectedGoals(data);
   if (!e) throw new Error('NO_DATA: not enough stats to price this match');
 
@@ -171,5 +172,5 @@ export async function livePicks(match: string, competitionId: string, state: Liv
   const base = 'Pre-match expected goals: ' + home + ' ' + e.lh.toFixed(2) + ', ' + away + ' ' + e.la.toFixed(2) + ' (stats: ' + (data.home ? data.home.games : 0) + ' and ' + (data.away ? data.away.games : 0) + ' games) \u00b7 Live state: minute ' + minute + ', score ' + homeGoals + '-' + awayGoals + ', reds ' + homeReds + '-' + awayReds + typed + (exp ? ' \u00b7 Pre-match expected ' + exp : '') + ' \u00b7 No live news or odds used';
   const basis = base + (pres ? ' \u00b7 Match stats: ' + home + ' ' + Math.round(50 + 50 * pres.tilt) + '% pressure, weight ' + pres.weight.toFixed(2) : ' \u00b7 Match stats: not used') + ' \u00b7 Hiding picks that pay below ' + minFair.toFixed(2) + ' fair odds';
   const note = 'Live mode uses pre-match stats and the state you typed. Time, score, red-card, corner and yellow-card effects are rough approximations and are untested. Bookmaker live odds are not known.' + (top.length ? '' : ' No live pick reaches 55% within your allowed lines.') + (!top.length && minFair > 1.01 ? ' Picks that pay almost nothing are hidden (below the minimum fair odds). Lower the minimum to see them.' : '') + noCountNote + mineMiss;
-  return { top, mine: mineItem, basis, note, modelVersion: 'live-v2', ...(pres ? { pressure: pres } : {}) };
+  return { top, mine: mineItem, basis, note, modelVersion: 'live-v2', ...(pres ? { pressure: pres } : {}), ...(opts?.all ? { candidates: cands } : {}) };
 }

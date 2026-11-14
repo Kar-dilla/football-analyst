@@ -57,8 +57,8 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
   const competition = getCompetition(competitionId);
   if (!competition) throw new Error('LEAGUE_NOT_FOUND');
   const q0: ParsedQuery = { home, away, market: 'goals_ou', side: 'over', line: 2.5, competitionId: competition.id, raw: match };
-  // NOTE: opts.skipNews is accepted here, but the news search happens inside loadMatchData (lib/orchestrate.ts).
-  const data = await loadMatchData(q0, competition);
+  // opts.skipNews is passed to loadMatchData, which then makes no news search and uses its own ':nonews' cache key.
+  const data = await loadMatchData(q0, competition, { skipNews: opts?.skipNews });
   const national = competition.type === 'national';
 
   const items: MenuItem[] = [];
@@ -67,7 +67,7 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
     if (!Number.isFinite(probability) || probability <= 0) return null;
     return { label, group, probability, modelProbability: probability, shift: 0, fairOdds: r2(1 / probability), query };
   };
-  const rawOf = (label: string) => (match + ' — ' + label).slice(0, 200);
+  const rawOf = (label: string) => (match + ' \u2014 ' + label).slice(0, 200);
   const add = (group: string, label: string, market: MarketKind, side: Side, p: number, line?: number) => {
     const it = mk(group, label, { ...q0, market, side, line, raw: rawOf(label) }, p);
     if (it) items.push(it);
@@ -175,8 +175,8 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
 
   const basis =
     'Stats: ' + (data.home?.name ?? home) + ' ' + (data.home?.games ?? 0) + ' games, ' + (data.away?.name ?? away) + ' ' + (data.away?.games ?? 0) +
-    ' games (this season, blended with last season where available) · News snippets: ' + data.news.length +
-    ' · Your added info: ' + gapN + ' items · Live-info nudge: ' + (applied ? 'applied (max ±8 points)' : 'not applied');
+    ' games (this season, blended with last season where available) \u00b7 News snippets: ' + data.news.length +
+    ' \u00b7 Your added info: ' + gapN + ' items \u00b7 Live-info nudge: ' + (applied ? 'applied (max \u00b18 points)' : 'not applied');
   const note =
     (top.length
       ? 'Probabilities come from team stats (Poisson model), optionally nudged by news. Bookmaker odds are not known; lines are limited to the ranges you set. Tap Analyze for the full check.'
