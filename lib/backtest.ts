@@ -1,10 +1,10 @@
-import { goalsModel } from '@/lib/models/goals';
+import { expectedGoals, goalsModel } from '@/lib/models/goals';
 import { fitStrengths } from '@/lib/models/strengths';
 import { getCompetition } from '@/lib/registry';
 import { getOrSet } from '@/lib/cache';
 import type { Competition, MatchData, ParsedQuery, TeamStats } from '@/lib/types';
 
-type Row = { d: number; h: string; a: string; hg: number; ag: number; sw?: number };
+type Row = { d: number; h: string; a: string; hg: number; ag: number; sw?: number; hthg?: number; htag?: number };
 type Rec = Record<string, string>;
 type EventDef = { name: string; q: Pick<ParsedQuery, 'market' | 'side' | 'line'>; safe: boolean; hit: (h: number, a: number) => boolean };
 type Acc = { n: number; b: number; b0: number; bk: { n: number; p: number; y: number }[]; s75: number[]; s85: number[] };
@@ -85,7 +85,10 @@ async function loadRows(url: string, kind: 'club' | 'intl'): Promise<Row[]> {
       const hg = num(club ? get(r, 'FTHG') : get(r, 'home_score'));
       const ag = num(club ? get(r, 'FTAG') : get(r, 'away_score'));
       if (!Number.isFinite(d) || !h || !a || !Number.isFinite(hg) || !Number.isFinite(ag) || (!club && d < SINCE)) continue;
-      rows.push({ d, h, a, hg, ag });
+      // half-time score: club files only, kept only when both numbers are present
+      const hthg = club ? num(get(r, 'HTHG')) : NaN;
+      const htag = club ? num(get(r, 'HTAG')) : NaN;
+      rows.push({ d, h, a, hg, ag, ...(Number.isFinite(hthg) && Number.isFinite(htag) ? { hthg, htag } : {}) });
     }
     return rows;
   });
@@ -317,6 +320,57 @@ export async function runBacktestRows(
     if (cands.length < 20) return { error: 'not enough testable matches (' + cands.length + ')' + fe };
     const out = predictRows(cands, c, v === 'strengthsDcMix', v === 'old' ? { rho: 0, spread: 0 } : undefined);
     return { comp, variant: v, matches: cands.length, rows: out };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// Test-only: one row per tested match with the pre-match expected goals (strengthsDcMix data, same walk-forward as runBacktestRows),
+// the half-time score and the final score. Matches without a valid half-time score are skipped; limit keeps the most recent matches.
+export async function runBacktestMatches(
+  comp: string,
+  seasonsBack: number,
+  limit?: number,
+): Promise<{ comp: string; matches: number; rows: { date: string; home: string; away: string; lh: number; la: number; hthg: number; htag: number; hg: number; ag: number }[] } | { error: string }> {
+  try {
+    const c = comp ? getCompetition(comp) : null;
+    if (!c) return { error: 'unknown competition: ' + (comp || '(none)') };
+    if (!c.csvPath || !c.csvPath.startsWith('mmz4281')) return { error: 'competition has no mmz4281 csvPath: ' + c.id };
+    const back = Number.isFinite(seasonsBack) ? Math.min(4, Math.max(0, Math.floor(seasonsBack))) : 0;
+    const paths: string[] = [c.csvPath];
+    for (let i = 0; i < back; i++) {
+      const last = paths[paths.length - 1];
+      const nx = prevSeason(last);
+      if (nx === last) break;
+      paths.push(nx);
+    }
+    let rows: Row[] = [];
+    const errs: string[] = [];
+    const got = await Promise.allSettled(paths.map((p) => loadRows(CLUB_BASE + p, 'club')));
+    got.forEach((g, gi) => {
+      if (g.status === 'fulfilled') rows = rows.concat(g.value.map((r) => ({ ...r, sw: gi === 0 ? 1 : 0.5 })));
+      else errs.push(String(g.reason?.message ?? g.reason));
+    });
+    const fe = errs.length ? ': ' + errs.join('; ') : '';
+    if (rows.length < 20) return { error: 'not enough data' + fe };
+    const all = walk(rows.sort((x, y) => x.d - y.d), true);
+    const lim = typeof limit === 'number' && Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 0;
+    const withHt = all.filter((k) => typeof k.r.hthg === 'number' && typeof k.r.htag === 'number' && k.r.hthg <= k.r.hg && k.r.htag <= k.r.ag);
+    const cands = lim ? withHt.slice(-lim) : withHt;
+    if (cands.length < 20) return { error: 'not enough testable matches (' + cands.length + ')' + fe };
+    const out = cands.flatMap((k) => {
+      const f = k.fit;
+      const side = (t: string) => ({ att: f?.att.get(t) ?? 0, def: f?.def.get(t) ?? 0, n: f?.n.get(t) ?? 0 });
+      const st = f ? { home: side(k.r.h), away: side(k.r.a), homeAdv: f.homeAdv, mu: f.mu } : undefined;
+      const data = {
+        query: { home: k.r.h, away: k.r.a, raw: '', market: 'goals_ou', side: 'over', line: 2.5 }, competition: c, home: k.home, away: k.away, referee: null,
+        leagueAvg: { goals: k.lm, fhGoals: 0, corners: 0, cards: 0 }, fixtureDates: { home: [], away: [] }, news: [], missing: [], ...(st ? { strengths: st } : {}),
+      } as MatchData;
+      const xg = expectedGoals(data);
+      const ok = !!xg && typeof k.r.hthg === 'number' && typeof k.r.htag === 'number';
+      return ok && xg ? [{ date: new Date(k.r.d).toISOString().slice(0, 10), home: k.r.h, away: k.r.a, lh: r4(xg.lh), la: r4(xg.la), hthg: k.r.hthg ?? 0, htag: k.r.htag ?? 0, hg: k.r.hg, ag: k.r.ag }] : [];
+    });
+    return { comp, matches: out.length, rows: out };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }

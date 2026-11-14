@@ -1,0 +1,21 @@
+import { runBacktestMatches } from '@/lib/backtest';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+export async function GET(req: Request): Promise<Response> {
+  if (process.env.VERCEL) return new Response('Not found', { status: 404 });
+  try {
+    const sp = new URL(req.url).searchParams;
+    const comp = (sp.get('comp') ?? '').trim();
+    if (!comp) return Response.json({ error: 'comp is required' });
+    const rs = sp.get('seasons');
+    const seasons = rs !== null && rs.trim() !== '' && Number.isFinite(Number(rs)) ? Number(rs) : 1;
+    const rl = sp.get('limit');
+    const lim = rl !== null && rl.trim() !== '' && Number.isFinite(Number(rl)) ? Number(rl) : undefined;
+    const out = await runBacktestMatches(comp, seasons, lim);
+    return Response.json(out);
+  } catch (e) {
+    return Response.json({ error: e instanceof Error ? e.message : String(e) });
+  }
+}
