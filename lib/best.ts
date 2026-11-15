@@ -101,10 +101,10 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
   single('result', '1x2', '1', home + ' win');
   single('result', '1x2', 'X', 'Draw');
   single('result', '1x2', '2', away + ' win');
+  single('doublechance', 'double_chance', '1X', home + ' or draw');
+  single('doublechance', 'double_chance', 'X2', away + ' or draw');
+  single('doublechance', 'double_chance', '12', home + ' or ' + away + ' (no draw)');
   if (!national) {
-    single('doublechance', 'double_chance', '1X', home + ' or draw');
-    single('doublechance', 'double_chance', 'X2', away + ' or draw');
-    single('doublechance', 'double_chance', '12', home + ' or ' + away + ' (no draw)');
     ladder('firsthalf', 'fh_goals_ou', 0.5, 'goals (1st half)');
     ladder('secondhalf', 'sh_goals_ou', 0.5, 'goals (2nd half)');
     ladder('corners', 'corners_ou', 9.5, 'corners');
