@@ -42,7 +42,8 @@ export interface DailyFilters {
   maxShared?: number;     // legs a later slip may reuse from earlier slips, 0 to 10 (default 0 = every slip uses different legs)
 }
 
-export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
+// handicap, fhdc (1st half double chance) and shdc (2nd half double chance) are the extra markets.
+export const ALL_MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards', 'handicap', 'fhdc', 'shdc'];
 // Draw legs live in their own range. Hard limits the user can never override: 0.20 to 0.50.
 export const HARD_DRAW_MIN = 0.2;
 export const HARD_DRAW_MAX = 0.5;

@@ -11,6 +11,7 @@ import { halvesModel } from '@/lib/models/halves';
 import { cornersCardsModel } from '@/lib/models/cornersCards';
 import { timingModel } from '@/lib/models/timing';
 import { subsModel } from '@/lib/models/subs';
+import { extraModel } from '@/lib/models/extra';
 import { safestLine as pickSafestLine } from '@/lib/ladder';
 import { computeFlags } from '@/lib/flags';
 import { buildNeeds } from '@/lib/needs';
@@ -121,6 +122,7 @@ export async function loadMatchData(query: ParsedQuery, competition: Competition
   return data;
 }
 
+// Note: lib/label.ts is not part of this change. If it needs the handicap / half double-chance markets, it falls back to query.raw.
 function runModel(data: MatchData): BaseResult | null {
   switch (data.query.market) {
     case 'goals_ou': case 'btts': case '1x2': case 'double_chance': return goalsModel(data);
@@ -128,6 +130,7 @@ function runModel(data: MatchData): BaseResult | null {
     case 'corners_ou': case 'cards_ou': return cornersCardsModel(data);
     case 'window_goals': return timingModel(data);
     case 'fh_subs': return subsModel(data);
+    case 'handicap': case 'fh_double_chance': case 'sh_double_chance': return extraModel(data);
     default: return null;
   }
 }
@@ -140,10 +143,10 @@ export async function analyze(raw: string, threshold: number, gap?: GapFacts, co
   if (!competition) throw new Error('LEAGUE_NOT_FOUND');
   const market = query.market;
   const national = competition.type === 'national';
-  if (national && !['goals_ou', 'btts', '1x2', 'double_chance'].includes(market)) throw new Error('NO_DATA: national-team matches support goals, BTTS, 1X2 and double chance only');
-  const validSides = ({ btts: ['yes', 'no'], '1x2': ['1', 'X', '2'], double_chance: ['1X', 'X2', '12'] } as Record<string, string[]>)[market];
+  if (national && !['goals_ou', 'btts', '1x2', 'double_chance', 'handicap'].includes(market)) throw new Error('NO_DATA: national-team matches support goals, BTTS, 1X2 and double chance only');
+  const validSides = ({ btts: ['yes', 'no'], '1x2': ['1', 'X', '2'], double_chance: ['1X', 'X2', '12'], handicap: ['1', '2'], fh_double_chance: ['1X', 'X2'], sh_double_chance: ['1X', 'X2'] } as Record<string, string[]>)[market];
   if (validSides && !validSides.includes(query.side ?? '')) throw new Error('NO_DATA: this market needs a side, e.g. "France 1X double chance", "France to win" or "both teams to score yes"');
-  if (competition.csvPath?.startsWith('new/') && ['fh_goals_ou', 'sh_goals_ou', 'corners_ou', 'cards_ou'].includes(market)) throw new Error('NO_DATA: only goals, early-goal and sub markets are available for ' + competition.name);
+  if (competition.csvPath?.startsWith('new/') && ['fh_goals_ou', 'sh_goals_ou', 'corners_ou', 'cards_ou', 'fh_double_chance', 'sh_double_chance'].includes(market)) throw new Error('NO_DATA: only goals, early-goal and sub markets are available for ' + competition.name);
   const data = await loadMatchData(query, competition);
   if (gap) data.gap = gap;
   if (gap?.referee) {

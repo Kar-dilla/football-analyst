@@ -38,7 +38,8 @@ export async function POST(req: Request) {
   }
   // Top-level from/to (ISO UTC) win over filters.from/to. An invalid or one-sided window is ignored by normalizeFilters.
   const rawF = body.filters && typeof body.filters === 'object' ? (body.filters as Record<string, unknown>) : {};
-  const f = normalizeFilters({ ...rawF, ...(body.from !== undefined || body.to !== undefined ? { from: body.from, to: body.to } : {}) }); // bad or missing fields fall back to defaults
+  // bad or missing fields fall back to defaults; markets may include handicap, fhdc and shdc (they are part of ALL_MARKETS)
+  const f = normalizeFilters({ ...rawF, ...(body.from !== undefined || body.to !== undefined ? { from: body.from, to: body.to } : {}) });
   const lo = Math.max(f.minP, HARD_MIN_P);
   const dLo = f.drawMinP ?? DEFAULT_DRAW_MIN; // draw range, already clamped to 0.20 to 0.50 by normalizeFilters
   const dHi = f.drawMaxP ?? DEFAULT_DRAW_MAX;
@@ -79,7 +80,7 @@ export async function POST(req: Request) {
       try {
         const match = `${fx.home} vs ${fx.away}`;
         const res = await withTimeout(
-          bestPicks(match, competitionId, undefined, undefined, undefined, { skipAi: true, skipNews: true, all: true }),
+          bestPicks(match, competitionId, undefined, undefined, undefined, { skipAi: true, skipNews: true, all: true, extra: true }),
           TIMEOUT_MS,
         );
         if (f.includeDraws) {

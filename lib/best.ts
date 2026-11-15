@@ -1,6 +1,7 @@
 import { goalsModel } from '@/lib/models/goals';
 import { halvesModel } from '@/lib/models/halves';
 import { cornersCardsModel } from '@/lib/models/cornersCards';
+import { extraModel } from '@/lib/models/extra';
 import { computeFlags } from '@/lib/flags';
 import { callJSON } from '@/lib/llm';
 import { parseQuery } from '@/lib/parse';
@@ -17,7 +18,7 @@ export interface BestResult { top: MenuItem[]; mine: MenuItem | null; basis: str
 
 type Side = NonNullable<ParsedQuery['side']>;
 type LineGroup = keyof AllowedLines;
-const GROUPS = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards'];
+const GROUPS = ['goals', 'btts', 'result', 'doublechance', 'firsthalf', 'secondhalf', 'corners', 'cards', 'handicap', 'fhdc', 'shdc'];
 const NUDGE_SYSTEM =
   'You adjust model probabilities for football bets using only the supplied news, flags and user facts. For each candidate return a shift between -0.08 and 0.08 and a note of at most 100 characters. Shift only when the supplied text clearly affects that bet (for example a key attacker out lowers over and BTTS bets; a rotated or tired side raises under and draw bets). Otherwise shift 0. Never invent facts. Return ONLY JSON {adjustments:[{id,shift,note}]}.';
 
@@ -25,6 +26,8 @@ const r2 = (x: number) => Math.round(x * 100) / 100;
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const cut = (xs: string[] | undefined, len = 120, n = 10) => (xs ?? []).slice(0, n).map((s) => String(s).slice(0, len));
+// '+1.5' or '-1.5'
+const signed = (x: number) => (x > 0 ? '+' + x : String(x));
 
 // Runs the matching model on a clone of data carrying query q; null when the model has no answer.
 function price(data: MatchData, q: ParsedQuery): BaseResult | null {
@@ -42,6 +45,10 @@ function price(data: MatchData, q: ParsedQuery): BaseResult | null {
       case 'corners_ou':
       case 'cards_ou':
         return cornersCardsModel(d);
+      case 'handicap':
+      case 'fh_double_chance':
+      case 'sh_double_chance':
+        return extraModel(d);
       default:
         return null;
     }
@@ -50,7 +57,8 @@ function price(data: MatchData, q: ParsedQuery): BaseResult | null {
   }
 }
 
-export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number, opts?: { skipAi?: boolean; skipNews?: boolean; all?: boolean }): Promise<BestResult> {
+// opts.extra: also price handicap and half double-chance legs (used by the daily slip scan only; Picks never sets it).
+export async function bestPicks(match: string, competitionId: string, mine?: string, allowed?: AllowedLines, maxProbability?: number, opts?: { skipAi?: boolean; skipNews?: boolean; all?: boolean; extra?: boolean }): Promise<BestResult> {
   const parts = match.trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((s) => s.trim());
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('NO_DATA: Type the match as "Team A vs Team B".');
   const [home, away] = parts;
@@ -101,6 +109,26 @@ export async function bestPicks(match: string, competitionId: string, mine?: str
     ladder('secondhalf', 'sh_goals_ou', 0.5, 'goals (2nd half)');
     ladder('corners', 'corners_ou', 9.5, 'corners');
     ladder('cards', 'cards_ou', 3.5, 'cards');
+  }
+
+  // Extra markets: only when the caller asks (daily scan). Picks never sets opts.extra, so its numbers and ranking stay as they were.
+  if (opts?.extra) {
+    // line = the HOME handicap; the away leg shows the away team with the opposite sign
+    for (const L of [-2.5, -1.5, 1.5, 2.5]) {
+      for (const side of ['1', '2'] as const) {
+        const r = price(data, { ...q0, market: 'handicap', side, line: L });
+        if (r) add('handicap', (side === '1' ? home + ' ' + signed(L) : away + ' ' + signed(-L)), 'handicap', side, r.probability, L);
+      }
+    }
+    if (!national) {
+      const halves = [['fhdc', 'fh_double_chance', '1st half'], ['shdc', 'sh_double_chance', '2nd half']] as const;
+      for (const [group, market, tag] of halves) {
+        for (const side of ['1X', 'X2'] as const) {
+          const r = price(data, { ...q0, market, side, line: undefined });
+          if (r) add(group, (side === '1X' ? home : away) + ' or draw (' + tag + ')', market, side, r.probability);
+        }
+      }
+    }
   }
 
   // The user's own bet (never filtered by `allowed`)

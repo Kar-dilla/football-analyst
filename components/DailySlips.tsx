@@ -20,10 +20,12 @@ interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; t
 // Module-level so the last scan survives switching tabs (lost only on a full page reload).
 let cache: Scan | null = null;
 
+// markets: ALL_MARKETS already includes handicap, fhdc and shdc, so they are ticked by default and by Reset.
 const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '', draws: false, drawMin: '25', drawMax: '45', shared: '0' };
 const MARKET_LABELS: Record<string, string> = {
   goals: 'Goals', btts: 'Both teams to score', result: 'Result', doublechance: 'Double chance',
   firsthalf: '1st half goals', secondhalf: '2nd half goals', corners: 'Corners', cards: 'Cards',
+  handicap: 'Handicap', fhdc: '1st half double chance', shdc: '2nd half double chance',
 };
 const pct = (x: number) => (x * 100).toFixed(1);
 const pc = (x: number) => Number((x * 100).toFixed(1));

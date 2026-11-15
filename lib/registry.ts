@@ -32,6 +32,7 @@ const ROWS: Row[] = [
   ['uecl', 'Conference League', 'C', 'club', '-', '-', 848],
   ['worldcup', 'World Cup', 'C', 'national', 'WC', '-', 1],
   ['afcon', 'AFCON', 'C', 'national', '-', '-', 6],
+  ['afconq', 'AFCON Qualifiers', 'C', 'national', '-', '-', 0],
   ['nations', 'Nations League', 'C', 'national', '-', '-', 5],
   ['championship', 'Championship', 'A', 'club', '-', 'mmz4281/2627/E1.csv', 0],
   ['league1', 'League One', 'A', 'club', '-', 'mmz4281/2627/E2.csv', 0],
@@ -53,7 +54,7 @@ const GROUP: Record<string, string> = {
   seriea: 'Italy', laliga: 'Spain', bundesliga: 'Germany', ligue1: 'France',
   austria: 'Austria', switzerland: 'Switzerland', poland: 'Poland', denmark: 'Denmark',
   norway: 'Norway', sweden: 'Sweden', finland: 'Finland', ireland: 'Ireland', romania: 'Romania',
-  worldcup: 'International', afcon: 'International', nations: 'International',
+  worldcup: 'International', afcon: 'International', afconq: 'International', nations: 'International',
 };
 
 // Football season code, e.g. "2627". A new season starts in July.

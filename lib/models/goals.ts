@@ -25,7 +25,7 @@ export function expectedGoals(data: MatchData): { lh: number; la: number } | nul
     const baseH = raw > 0 ? (rawH * total) / raw : total / 2;
     const baseA = raw > 0 ? (rawA * total) / raw : total / 2;
     // home advantage: club 1.12, 'nations' 1.10, any other national/youth (neutral venue) 1.0
-    const adv = competition.type === 'club' ? 1.12 : competition.id === 'nations' ? 1.1 : 1.0;
+    const adv = competition.type === 'club' ? 1.12 : (competition.id === 'nations' || competition.id === 'afconq') ? 1.1 : 1.0;
     const advSum = baseH * adv + baseA / adv;
     lh = advSum > 0 ? (baseH * adv * total) / advSum : total / 2;
     la = advSum > 0 ? ((baseA / adv) * total) / advSum : total / 2;
@@ -56,6 +56,17 @@ function dixonColes(grid: number[][], lh: number, la: number, rho: number): numb
   const adj = grid.map((row, h) => row.map((v, a) => { const x = v * (f[h + ',' + a] ?? 1); sum += x; return x; }));
   if (!(sum > 0) || !Number.isFinite(sum)) return null;
   return adj.map((row) => row.map((v) => v / sum));
+}
+
+// The same score grid goalsModel builds (mixture grid + Dixon-Coles, default rho -0.08, spread 0.2). grid[homeGoals][awayGoals]. Null when there is no answer.
+export function fullGrid(data: MatchData): number[][] | null {
+  try {
+    const xg = expectedGoals(data);
+    if (!xg) return null;
+    return dixonColes(mixtureGrid(xg.lh, xg.la, 0.2), xg.lh, xg.la, -0.08);
+  } catch {
+    return null;
+  }
 }
 
 export function goalsModel(data: MatchData, opts?: { rho?: number; spread?: number }): BaseResult | null {

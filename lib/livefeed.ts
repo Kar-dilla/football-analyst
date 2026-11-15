@@ -17,7 +17,7 @@ const SLUGS: Record<string, string> = {
   eredivisie: 'ned.1', portugal: 'por.1', belgium: 'bel.1', superlig: 'tur.1', brazil: 'bra.1',
   mls: 'usa.1', japan: 'jpn.1', saudi: 'ksa.1', india: 'ind.1', ucl: 'uefa.champions',
   uel: 'uefa.europa', uecl: 'uefa.europa.conf', nations: 'uefa.nations', worldcup: 'fifa.world',
-  afcon: 'caf.nations',
+  afcon: 'caf.nations', afconq: 'caf.nations_qual',
   championship: 'eng.2', league1: 'eng.3', league2: 'eng.4', nationalleague: 'eng.5',
   scotprem: 'sco.1', scotchamp: 'sco.2', scot1: 'sco.3', scot2: 'sco.4',
   austria: 'aut.1', switzerland: 'sui.1', denmark: 'den.1', norway: 'nor.1',

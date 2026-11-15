@@ -1,6 +1,6 @@
 export type Tier = 'A' | 'B' | 'C';
 export type Conf = 'low' | 'medium' | 'high';
-export type MarketKind = 'goals_ou'|'btts'|'1x2'|'double_chance'|'fh_goals_ou'|'sh_goals_ou'|'corners_ou'|'cards_ou'|'window_goals'|'fh_subs';
+export type MarketKind = 'goals_ou'|'btts'|'1x2'|'double_chance'|'fh_goals_ou'|'sh_goals_ou'|'corners_ou'|'cards_ou'|'window_goals'|'fh_subs'|'handicap'|'fh_double_chance'|'sh_double_chance';
 
 export interface Competition {
   id: string; name: string; tier: Tier;
@@ -12,6 +12,8 @@ export interface Competition {
   group?: string;         // dropdown group label, e.g. "England"
 }
 
+// handicap: side '1' (home) or '2' (away), line = the HOME handicap (-1.5 = home -1.5; 'Everton +1.5' is side '2' with line -1.5).
+// fh_double_chance / sh_double_chance: side '1X' or 'X2'.
 export interface ParsedQuery {
   home: string; away: string; market: MarketKind;
   side?: 'over'|'under'|'yes'|'no'|'1'|'X'|'2'|'1X'|'X2'|'12';
