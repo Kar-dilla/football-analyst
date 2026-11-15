@@ -9,7 +9,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const MARKETS = ['goals', 'btts', 'result', 'doublechance', 'nextgoal', 'corners', 'cards'];
+// handicap and fhdc (1st half double chance) are the extra live markets.
+const MARKETS = ['goals', 'btts', 'result', 'doublechance', 'nextgoal', 'corners', 'cards', 'handicap', 'fhdc'];
 const MAX_MATCHES = 8;
 const CONCURRENCY = 3;
 const TIMEOUT_MS = 15000;
@@ -82,7 +83,7 @@ async function one(m: LiveMatch, cid: string, name: string, f: F): Promise<Daily
     if (minute === null) return null;
     const home = m.home;
     const away = m.away;
-    const res = await withTimeout(livePicks(`${home} vs ${away}`, cid, stateOf(m, minute), undefined, undefined, undefined, f.minLegOdds, { all: true, skipNews: true }), TIMEOUT_MS);
+    const res = await withTimeout(livePicks(`${home} vs ${away}`, cid, stateOf(m, minute), undefined, undefined, undefined, f.minLegOdds, { all: true, skipNews: true, extra: true }), TIMEOUT_MS);
     let best: LiveItem | null = null;
     for (const c of res?.candidates ?? []) {
       if (c.probability < f.minP || c.probability > f.maxP || c.probability >= 0.995) continue;

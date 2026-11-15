@@ -20,6 +20,8 @@ type Test = (h: number, a: number) => boolean;
 const fair = (p: number): number => p > 0 ? Math.round(100 / p) / 100 : 0;
 const mk = (label: string, group: string, p: number): LiveItem => ({ label, group, probability: p, fairOdds: fair(p) });
 const whole = (v: unknown, lo: number, hi: number): boolean => typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
+// '+1.5' or '-1.5'
+const signed = (x: number): string => (x > 0 ? '+' + x : String(x));
 
 // Corners and yellow cards: Poisson on what is left, pooled with the pace so far (rough, untested).
 type Pace = { mean: number; n: number };
@@ -53,7 +55,8 @@ const testFor = (q: ParsedQuery): Test | null => {
   return null;
 };
 
-export async function livePicks(match: string, competitionId: string, state: LiveState, mine?: string, allowedGoals?: AllowedRange, maxProbability?: number, minFairOdds?: number, opts?: { all?: boolean; skipNews?: boolean }): Promise<LiveResult> {
+// opts.extra: also price handicap (on the final score) and 1st half double chance (only up to minute 44). Existing callers never set it.
+export async function livePicks(match: string, competitionId: string, state: LiveState, mine?: string, allowedGoals?: AllowedRange, maxProbability?: number, minFairOdds?: number, opts?: { all?: boolean; skipNews?: boolean; extra?: boolean }): Promise<LiveResult> {
   const parts = String(match || '').trim().split(/\s+(?:vs\.?|v|-)\s+/i).map((x) => x.trim());
   if (parts.length !== 2 || !parts[0] || !parts[1]) throw new Error('NO_DATA: Type the match as "Team A vs Team B".');
   const home = parts[0];
@@ -133,6 +136,31 @@ export async function livePicks(match: string, competitionId: string, state: Liv
     for (let L = 0.5; L <= ct.max; L += 1) {
       cands.push(mk('Over ' + L + ' ' + ct.name, ct.group, overP(pace, L)));
       cands.push(mk('Under ' + L + ' ' + ct.name, ct.group, underP(pace, L)));
+    }
+  }
+
+  // Extra markets (opts.extra only), added after every existing candidate so existing numbers and order stay as they were.
+  if (opts?.extra) {
+    try {
+      // Handicap on the final score. Half-point lines only; L = the HOME handicap, the away leg shows the opposite sign.
+      for (const L of [-2.5, -1.5, 1.5, 2.5]) {
+        add(home + ' ' + signed(L), 'handicap', (h, a) => h + L > a);
+        add(away + ' ' + signed(-L), 'handicap', (h, a) => h + L < a);
+      }
+      // 1st half double chance: only while the first half is still on (minute 44 or earlier). The current score is the 1st-half score.
+      if (minute <= 44) {
+        const ratio = (0.45 * (45 - minute)) / 45 / rem;
+        const g1 = scoreGrid(rh * ratio, ra * ratio, 10);
+        const pr1 = (t: Test): number => {
+          let s = 0;
+          for (let x = 0; x < g1.length; x++) for (let y = 0; y < g1[x].length; y++) if (t(homeGoals + x, awayGoals + y)) s += g1[x][y];
+          return Math.min(1, s);
+        };
+        cands.push(mk(home + ' or draw (1st half)', 'fhdc', pr1((h, a) => h >= a)));
+        cands.push(mk(away + ' or draw (1st half)', 'fhdc', pr1((h, a) => a >= h)));
+      }
+    } catch {
+      // the extra markets are optional
     }
   }
 

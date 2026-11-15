@@ -16,10 +16,12 @@ interface Form { minP: string; maxP: string; minMin: string; maxMin: string; max
 // Module-level so the last scan survives switching tabs (lost only on a full page reload).
 let cache: Scan | null = null;
 
-const MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'nextgoal', 'corners', 'cards'];
+// handicap and fhdc are the extra markets; FORM0 uses MARKETS, so they are ticked by default and by Reset.
+const MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'nextgoal', 'corners', 'cards', 'handicap', 'fhdc'];
 const MARKET_LABELS: Record<string, string> = {
   goals: 'Goals', btts: 'Both teams to score', result: 'Result', doublechance: 'Double chance',
   nextgoal: 'Next goal', corners: 'Corners', cards: 'Cards',
+  handicap: 'Handicap', fhdc: '1st half double chance',
 };
 const FORM0: Form = { minP: '80', maxP: '88', minMin: '15', maxMin: '80', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, markets: MARKETS, allLeagues: true, leagues: [], full: false, shared: '0' };
 const pct = (x: number) => (x * 100).toFixed(1);
@@ -156,6 +158,7 @@ export default function LiveSlips() {
               <Tick key={m} checked={form.markets.includes(m)} onChange={() => set({ markets: flip(form.markets, m) })}>{MARKET_LABELS[m] ?? m}</Tick>
             ))}
           </div>
+          <div className="muted">Handicap here is on the final score. Check how your bookmaker counts live handicaps.</div>
           <div className="label">Leagues</div>
           <Tick checked={form.allLeagues} onChange={() => set({ allLeagues: !form.allLeagues })}>All leagues</Tick>
           {!form.allLeagues && (
