@@ -113,6 +113,7 @@ export default function DailySlips() {
   const cancelled = useRef(false);
   const ctl = useRef<AbortController | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seen = useRef(form);
   const scannable = allCompetitions().filter((c) => espnSlug(c.id));
 
   const set = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
@@ -127,6 +128,7 @@ export default function DailySlips() {
     const st = remember({ builtAt: sc ? sc.builtAt : 0, scan: sc, games: legsOf(s.games), drawGames: legsOf(s.drawGames), form: mergeForm(s.form) });
     setScan(st.scan);
     setSaved({ legs: st.games, draws: st.drawGames });
+    seen.current = st.form;
     setForm(st.form);
   }, []);
   // Form changes are kept in memory at once and written to storage 400 ms later (or when the screen closes).
@@ -136,15 +138,18 @@ export default function DailySlips() {
     if (cache) saveStored(DAILY_KEY, cache);
   };
   useEffect(() => {
-    if ((cache?.form ?? FORM0) === form) return;
+    if (seen.current === form) return;
+    seen.current = form;
     remember({ form });
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(flush, 400);
   }, [form]);
   useEffect(() => {
     const h = () => { if (timer.current) flush(); };
+    const v = () => { if (document.visibilityState === 'hidden') h(); };
     window.addEventListener('pagehide', h);
-    return () => { window.removeEventListener('pagehide', h); h(); };
+    document.addEventListener('visibilitychange', v);
+    return () => { window.removeEventListener('pagehide', h); document.removeEventListener('visibilitychange', v); h(); };
   }, []);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30000);
