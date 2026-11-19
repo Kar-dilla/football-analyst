@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { espnSlug } from '@/lib/livefeed';
@@ -8,13 +8,18 @@ import { MAX_LEGS_LIMIT, buildSlips, normalizeFilters } from '@/lib/dailySlips';
 import type { DailyFilters, DailyLeg, DailySlip } from '@/lib/dailySlips';
 import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
+import { LIVE_KEY, loadStored, saveStored } from '@/lib/slipStore';
 import { EmptyState, Notice, Stat } from '@/components/ui';
 
-interface Scan { slips: DailySlip[]; legs: number; builtAt: number; filters: DailyFilters }
-// Form values as typed (percent for probabilities). Kept in component state only.
+// Used = the markets, leagues ([] = all) and minute range a scan used. scanned = the filters the scan itself used (a rebuild changes filters, never scanned/used).
+interface Used { markets: string[]; leagues: string[]; minMin: number; maxMin: number }
+interface Scan { slips: DailySlip[]; legs: number; builtAt: number; filters: DailyFilters; scanned: DailyFilters; used: Used }
+// Form values as typed (percent for probabilities).
 interface Form { minP: string; maxP: string; minMin: string; maxMin: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; full: boolean; shared: string }
-// Module-level so the last scan survives switching tabs (lost only on a full page reload).
-let cache: Scan | null = null;
+// What is kept: the last scan, the games it collected and the filter form.
+interface Store { builtAt: number; scan: Scan | null; games: DailyLeg[]; form: Form }
+// Module-level so everything survives switching tabs; it is also saved to localStorage (see lib/slipStore.ts) so it survives a reload.
+let cache: Store | null = null;
 
 // handicap and fhdc are the extra markets; FORM0 uses MARKETS, so they are ticked by default and by Reset.
 const MARKETS: string[] = ['goals', 'btts', 'result', 'doublechance', 'nextgoal', 'corners', 'cards', 'handicap', 'fhdc'];
@@ -24,6 +29,35 @@ const MARKET_LABELS: Record<string, string> = {
   handicap: 'Handicap', fhdc: '1st half double chance',
 };
 const FORM0: Form = { minP: '80', maxP: '88', minMin: '15', maxMin: '80', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, markets: MARKETS, allLeagues: true, leagues: [], full: false, shared: '0' };
+// Saved form values are checked field by field; anything of the wrong type falls back to its default.
+function mergeForm(raw: unknown): Form {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const base = FORM0 as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...base };
+  for (const k of Object.keys(base)) {
+    const a = r[k];
+    const b = base[k];
+    if (Array.isArray(b) ? Array.isArray(a) && a.every((x) => typeof x === 'string') : typeof a === typeof b) out[k] = a;
+  }
+  return out as unknown as Form;
+}
+function remember(p: Partial<Store>): Store {
+  const st: Store = { builtAt: 0, scan: null, games: [], form: FORM0, ...(cache ?? {}), ...p };
+  cache = st;
+  return st;
+}
+const okScan = (x: unknown): x is Scan => {
+  const s = x as Partial<Scan> | null;
+  const u = s?.used as Partial<Used> | undefined;
+  return !!s && typeof s === 'object' && Array.isArray(s.slips) && s.slips.every((v) => !!v && Array.isArray(v.legs)) && typeof s.legs === 'number' && typeof s.builtAt === 'number' && !!s.filters && typeof s.filters === 'object' && !!s.scanned && typeof s.scanned === 'object' && !!u && Array.isArray(u.markets) && Array.isArray(u.leagues) && typeof u.minMin === 'number' && typeof u.maxMin === 'number';
+};
+const legsOf = (v: unknown): DailyLeg[] => (Array.isArray(v) ? v.filter((l) => !!l && typeof l.probability === 'number') : []);
+// True when the current filters need games the saved scan never looked at (so a rebuild would be wrong and a new scan is needed).
+function changed(cur: DailyFilters, old: DailyFilters, u: Used, w: Used): boolean {
+  const sub = (a: string[], b: string[]) => a.every((x) => b.includes(x));
+  const leaguesWider = w.leagues.length > 0 && (u.leagues.length === 0 || !sub(u.leagues, w.leagues));
+  return cur.minP < old.minP - 1e-9 || cur.maxP > old.maxP + 1e-9 || cur.minLegOdds < old.minLegOdds - 1e-9 || (cur.fullStatsOnly && !old.fullStatsOnly) || !sub(u.markets, w.markets) || u.minMin < w.minMin || u.maxMin > w.maxMin || leaguesWider;
+}
 const pct = (x: number) => (x * 100).toFixed(1);
 const pc = (x: number) => Number((x * 100).toFixed(1));
 // Win chance of a slip as a fraction, taken from 1/odds so very small chances keep their precision.
@@ -50,14 +84,51 @@ function Tick({ checked, onChange, children }: { checked: boolean; onChange: () 
 
 export default function LiveSlips() {
   const app = useApp() as unknown as { addLeg?: (leg: SlipLeg) => void };
-  const [scan, setScan] = useState<Scan | null>(cache);
+  const [scan, setScan] = useState<Scan | null>(cache?.scan ?? null);
+  const [games, setGames] = useState<DailyLeg[]>(cache?.games ?? []);
   const [progress, setProgress] = useState<{ n: number; m: number; found: number } | null>(null);
   const [msg, setMsg] = useState('');
-  const [form, setForm] = useState<Form>(FORM0);
+  const [form, setForm] = useState<Form>(cache?.form ?? FORM0);
+  const [now, setNow] = useState(() => Date.now());
   const cancelled = useRef(false);
   const ctl = useRef<AbortController | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scannable = allCompetitions().filter((c) => espnSlug(c.id));
   const set = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
+
+  // On the client only: when nothing is held in memory, load the last saved scan, games and form.
+  useEffect(() => {
+    if (cache) return;
+    const s = loadStored<Partial<Store>>(LIVE_KEY);
+    if (!s) return;
+    const raw: unknown = s.scan;
+    const sc = okScan(raw) ? { ...raw, filters: normalizeFilters(raw.filters), scanned: normalizeFilters(raw.scanned) } : null;
+    const st = remember({ builtAt: sc ? sc.builtAt : 0, scan: sc, games: legsOf(s.games), form: mergeForm(s.form) });
+    setScan(st.scan);
+    setGames(st.games);
+    setForm(st.form);
+  }, []);
+  // Form changes are kept in memory at once and written to storage 400 ms later (or when the screen closes).
+  const flush = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    if (cache) saveStored(LIVE_KEY, cache);
+  };
+  useEffect(() => {
+    if ((cache?.form ?? FORM0) === form) return;
+    remember({ form });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(flush, 400);
+  }, [form]);
+  useEffect(() => {
+    const h = () => { if (timer.current) flush(); };
+    window.addEventListener('pagehide', h);
+    return () => { window.removeEventListener('pagehide', h); h(); };
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   // Max legs left at its default (or empty) is sent as "not given", so a custom target above 15 can use 40 legs.
   const toFilters = (tv: number): DailyFilters =>
@@ -67,18 +138,27 @@ export default function LiveSlips() {
       minLegOdds: num(form.minOdds), fullStatsOnly: form.full,
       targetOdds: tv, onlyTarget: form.onlyTarget, maxShared: num(form.shared),
     });
+  const usedOf = (lo: number, hi: number): Used => ({ markets: [...form.markets], leagues: form.allLeagues ? [] : [...form.leagues], minMin: lo, maxMin: hi });
 
-  async function run() {
-    if (progress) return;
+  // Checks the form and returns the filters for a scan or a rebuild; null (with a message) when something is wrong.
+  function prepare() {
     const tv = form.target.trim() === '' ? 0 : Number(form.target);
     const lo = num(form.minMin);
     const hi = num(form.maxMin);
-    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 1 || hi > 120 || lo > hi) { setMsg('Check the minute range (1 to 120, from not after to).'); return; }
-    if (!form.allLeagues && form.leagues.length === 0) { setMsg('Tick at least one league.'); return; }
-    if (form.markets.length === 0) { setMsg('Tick at least one market.'); return; }
-    if (tv !== 0 && !(tv >= 1.5 && tv <= 100)) { setMsg('My target odds must be between 1.5 and 100.'); return; }
-    if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return; }
-    const f = toFilters(tv);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 1 || hi > 120 || lo > hi) { setMsg('Check the minute range (1 to 120, from not after to).'); return null; }
+    if (!form.allLeagues && form.leagues.length === 0) { setMsg('Tick at least one league.'); return null; }
+    if (form.markets.length === 0) { setMsg('Tick at least one market.'); return null; }
+    if (tv !== 0 && !(tv >= 1.5 && tv <= 100)) { setMsg('My target odds must be between 1.5 and 100.'); return null; }
+    if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return null; }
+    return { lo, hi, f: toFilters(tv) };
+  }
+
+  async function run() {
+    if (progress) return;
+    const p = prepare();
+    if (!p) return;
+    const { lo, hi, f } = p;
+    const used = usedOf(lo, hi);
     const leagues = scannable.filter((c) => form.allLeagues || form.leagues.includes(c.id));
     // One leg per home|away (the highest probability wins).
     const merged = new Map<string, DailyLeg>();
@@ -111,9 +191,27 @@ export default function LiveSlips() {
     setProgress(null);
     if (cancelled.current) { setMsg('Scan cancelled. Showing the previous result.'); return; }
     const legs = Array.from(merged.values());
-    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, builtAt: Date.now(), filters: f };
-    cache = next;
+    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, builtAt: Date.now(), filters: f, scanned: f, used };
+    saveStored(LIVE_KEY, remember({ builtAt: next.builtAt, scan: next, games: legs }));
     setScan(next);
+    setGames(legs);
+  }
+
+  // Builds the slips again from the saved games with the current filters. No network call.
+  function rebuild() {
+    if (progress || !scan) return;
+    const p = prepare();
+    if (!p) return;
+    const u = usedOf(p.lo, p.hi);
+    if (changed(p.f, scan.scanned, u, scan.used)) { setMsg('Filters changed. Tap Build to scan again.'); return; }
+    const w = scan.used;
+    const keep = (l: DailyLeg) => (!l.market || !MARKETS.includes(l.market) || u.markets.includes(l.market))
+      && (p.f.minLegOdds <= scan.scanned.minLegOdds || 1 / l.probability >= p.f.minLegOdds - 1e-9)
+      && ((p.lo <= w.minMin && p.hi >= w.maxMin) || l.minute === undefined || (l.minute >= p.lo && l.minute <= p.hi));
+    const next: Scan = { ...scan, slips: buildSlips(games.filter(keep), p.f), filters: p.f };
+    saveStored(LIVE_KEY, remember({ scan: next }));
+    setScan(next);
+    setMsg('Rebuilt from the saved games. No new scan.');
   }
 
   function cancel() {
@@ -131,12 +229,15 @@ export default function LiveSlips() {
   }
 
   const numBox = { width: 72 } as const;
+  const mins = scan ? Math.max(0, Math.floor((now - scan.builtAt) / 60000)) : 0;
+  const stale = !!scan && now - scan.builtAt > 600000;
   return (
     <div className="card stack">
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <span className="h2">Live slips</span>
-        {scan && <span className="label">Built {new Date(scan.builtAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+        {scan && <span className="label">Built {new Date(scan.builtAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({mins} min ago)</span>}
       </div>
+      {stale && <div className="muted" style={{ color: '#b45309', fontWeight: 600 }}>Live prices go stale. Refresh now.</div>}
       <details>
         <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Filters</summary>
         <div className="stack" style={{ paddingTop: 8 }}>
@@ -176,6 +277,7 @@ export default function LiveSlips() {
       <div className="row">
         <button type="button" className="btn" disabled={!!progress} onClick={run}>Build live slips</button>
         {scan && !progress && <button type="button" className="btn ghost" onClick={run}>Refresh</button>}
+        {games.length > 0 && !progress && <button type="button" className="btn ghost" onClick={rebuild}>Rebuild</button>}
         {progress && <button type="button" className="btn ghost" onClick={cancel}>Cancel</button>}
       </div>
       {progress && <div className="muted">Scanning {progress.n} of {progress.m} leagues... {progress.found} live matches found</div>}

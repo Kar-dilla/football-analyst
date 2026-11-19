@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { allCompetitions } from '@/lib/registry';
 import { espnSlug } from '@/lib/livefeed';
@@ -10,15 +10,18 @@ import type { SlipLeg } from '@/lib/slip';
 import { useApp } from '@/components/AppProvider';
 import { fetchPrices, priceKey } from '@/lib/pricesClient';
 import type { Price } from '@/lib/pricesClient';
+import { DAILY_KEY, loadStored, saveStored } from '@/lib/slipStore';
 import { EmptyState, Notice, Stat } from '@/components/ui';
 
-// drawSlips = draw-only slips (empty unless draw slips were on); draws = draw legs found.
-interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters; drawSlips: DailySlip[]; draws: number }
+// drawSlips = draw-only slips (empty unless draw slips were on); draws = draw legs found. scanned = the filters the scan itself used (a rebuild changes filters, never scanned).
+interface Scan { slips: DailySlip[]; legs: number; games: number; builtAt: number; filters: DailyFilters; drawSlips: DailySlip[]; draws: number; scanned: DailyFilters }
 interface Days { today: boolean; tomorrow: boolean; range: 0 | 3 | 7 }
-// Form values as typed (percent for probabilities). Kept in component state only. from/to = datetime-local values (local time). shared = max legs shared between slips.
+// Form values as typed (percent for probabilities). from/to = datetime-local values (local time). shared = max legs shared between slips.
 interface Form { minP: string; maxP: string; maxLegs: string; minOdds: string; target: string; onlyTarget: boolean; mix: boolean; markets: string[]; allLeagues: boolean; leagues: string[]; days: Days; full: boolean; from: string; to: string; draws: boolean; drawMin: string; drawMax: string; shared: string }
-// Module-level so the last scan survives switching tabs (lost only on a full page reload).
-let cache: Scan | null = null;
+// What is kept: the last scan, the games it collected (games = normal legs, drawGames = draw legs) and the filter form.
+interface Store { builtAt: number; scan: Scan | null; games: DailyLeg[]; drawGames: DailyLeg[]; form: Form }
+// Module-level so everything survives switching tabs; it is also saved to localStorage (see lib/slipStore.ts) so it survives a reload.
+let cache: Store | null = null;
 
 // markets: ALL_MARKETS already includes handicap, fhdc and shdc, so they are ticked by default and by Reset.
 const FORM0: Form = { minP: '80', maxP: '88', maxLegs: '20', minOdds: '1.10', target: '', onlyTarget: false, mix: false, markets: ALL_MARKETS, allLeagues: true, leagues: [], days: { today: true, tomorrow: false, range: 0 }, full: false, from: '', to: '', draws: false, drawMin: '25', drawMax: '45', shared: '0' };
@@ -27,6 +30,41 @@ const MARKET_LABELS: Record<string, string> = {
   firsthalf: '1st half goals', secondhalf: '2nd half goals', corners: 'Corners', cards: 'Cards',
   handicap: 'Handicap', fhdc: '1st half double chance', shdc: '2nd half double chance',
 };
+// Saved form values are checked field by field; anything of the wrong type falls back to its default.
+function mergeForm(raw: unknown): Form {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const base = FORM0 as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...base };
+  for (const k of Object.keys(base)) {
+    if (k === 'days') continue;
+    const a = r[k];
+    const b = base[k];
+    if (Array.isArray(b) ? Array.isArray(a) && a.every((x) => typeof x === 'string') : typeof a === typeof b) out[k] = a;
+  }
+  const d = r.days as Partial<Days> | undefined;
+  if (d && typeof d === 'object') out.days = { today: d.today === true, tomorrow: d.tomorrow === true, range: d.range === 3 || d.range === 7 ? d.range : 0 };
+  return out as unknown as Form;
+}
+function remember(p: Partial<Store>): Store {
+  const st: Store = { builtAt: 0, scan: null, games: [], drawGames: [], form: FORM0, ...(cache ?? {}), ...p };
+  cache = st;
+  return st;
+}
+const goodSlips = (v: unknown) => Array.isArray(v) && v.every((x) => !!x && Array.isArray(x.legs));
+const okScan = (x: unknown): x is Scan => {
+  const s = x as Partial<Scan> | null;
+  return !!s && typeof s === 'object' && goodSlips(s.slips) && goodSlips(s.drawSlips ?? []) && typeof s.legs === 'number' && typeof s.builtAt === 'number' && !!s.filters && typeof s.filters === 'object' && !!s.scanned && typeof s.scanned === 'object';
+};
+const legsOf = (v: unknown): DailyLeg[] => (Array.isArray(v) ? v.filter((l) => !!l && typeof l.probability === 'number') : []);
+// True when the current filters need games the saved scan never looked at (so a rebuild would be wrong and a new scan is needed).
+function changed(cur: DailyFilters, old: DailyFilters, builtAt: number): boolean {
+  const sub = (a: string[], b: string[]) => a.every((x) => b.includes(x));
+  const sameDays = cur.dayOffsets.join() === old.dayOffsets.join() && (cur.from ?? '') === (old.from ?? '') && (cur.to ?? '') === (old.to ?? '');
+  const otherDay = !old.from && new Date(builtAt).toDateString() !== new Date().toDateString();
+  const leaguesWider = old.leagues.length > 0 && (cur.leagues.length === 0 || !sub(cur.leagues, old.leagues));
+  const drawsWider = !!cur.includeDraws && (!old.includeDraws || (cur.drawMinP ?? 0) < (old.drawMinP ?? 0) - 1e-9 || (cur.drawMaxP ?? 0) > (old.drawMaxP ?? 0) + 1e-9);
+  return !sameDays || otherDay || leaguesWider || drawsWider || cur.minP < old.minP - 1e-9 || cur.maxP > old.maxP + 1e-9 || !sub(cur.markets, old.markets) || cur.minLegOdds < old.minLegOdds - 1e-9 || (cur.fullStatsOnly && !old.fullStatsOnly);
+}
 const pct = (x: number) => (x * 100).toFixed(1);
 const pc = (x: number) => Number((x * 100).toFixed(1));
 // Win chance of a slip as a fraction, taken from 1/odds so very small chances keep their precision.
@@ -64,17 +102,55 @@ function Tick({ checked, onChange, disabled, children }: { checked: boolean; onC
 
 export default function DailySlips() {
   const app = useApp() as unknown as { addLeg?: (leg: SlipLeg) => void };
-  const [scan, setScan] = useState<Scan | null>(cache);
+  const [scan, setScan] = useState<Scan | null>(cache?.scan ?? null);
+  const [saved, setSaved] = useState<{ legs: DailyLeg[]; draws: DailyLeg[] }>({ legs: cache?.games ?? [], draws: cache?.drawGames ?? [] });
   const [progress, setProgress] = useState<{ n: number; m: number; found: number; d: number; k: number } | null>(null);
   const [msg, setMsg] = useState('');
-  const [form, setForm] = useState<Form>(FORM0);
+  const [form, setForm] = useState<Form>(cache?.form ?? FORM0);
   const [prices, setPrices] = useState<Record<string, Price | null>>({});
   const [pricing, setPricing] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const cancelled = useRef(false);
   const ctl = useRef<AbortController | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scannable = allCompetitions().filter((c) => espnSlug(c.id));
 
   const set = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
+
+  // On the client only: when nothing is held in memory, load the last saved scan, games and form.
+  useEffect(() => {
+    if (cache) return;
+    const s = loadStored<Partial<Store>>(DAILY_KEY);
+    if (!s) return;
+    const raw: unknown = s.scan;
+    const sc = okScan(raw) ? { ...raw, filters: normalizeFilters(raw.filters), scanned: normalizeFilters(raw.scanned), drawSlips: raw.drawSlips ?? [] } : null;
+    const st = remember({ builtAt: sc ? sc.builtAt : 0, scan: sc, games: legsOf(s.games), drawGames: legsOf(s.drawGames), form: mergeForm(s.form) });
+    setScan(st.scan);
+    setSaved({ legs: st.games, draws: st.drawGames });
+    setForm(st.form);
+  }, []);
+  // Form changes are kept in memory at once and written to storage 400 ms later (or when the screen closes).
+  const flush = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    if (cache) saveStored(DAILY_KEY, cache);
+  };
+  useEffect(() => {
+    if ((cache?.form ?? FORM0) === form) return;
+    remember({ form });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(flush, 400);
+  }, [form]);
+  useEffect(() => {
+    const h = () => { if (timer.current) flush(); };
+    window.addEventListener('pagehide', h);
+    return () => { window.removeEventListener('pagehide', h); h(); };
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
   // Ticking a single day replaces a range; ticking a range replaces the single days.
   const pickDay = (k: 'today' | 'tomorrow') => {
     const d = form.days;
@@ -96,8 +172,8 @@ export default function DailySlips() {
       from: win?.from, to: win?.to,
     });
 
-  async function run() {
-    if (progress) return;
+  // Checks the form and returns the filters for a scan or a rebuild; null (with a message) when something is wrong.
+  function prepare() {
     const tv = form.target.trim() === '' ? 0 : Number(form.target);
     const tz = -new Date().getTimezoneOffset(); // minutes east of UTC, as fetchFixtures expects
     // Custom window: converted from the user's local time to ISO UTC.
@@ -105,22 +181,29 @@ export default function DailySlips() {
     const hasF = form.from.trim() !== '';
     const hasT = form.to.trim() !== '';
     if (hasF || hasT) {
-      if (!(hasF && hasT)) { setMsg('Fill in both From and To, or clear the window.'); return; }
+      if (!(hasF && hasT)) { setMsg('Fill in both From and To, or clear the window.'); return null; }
       const a = new Date(form.from).getTime();
       const b = new Date(form.to).getTime();
-      if (!Number.isFinite(a) || !Number.isFinite(b)) { setMsg('Check the From and To dates.'); return; }
-      if (a >= b) { setMsg('From must be before To.'); return; }
-      if (b <= Date.now()) { setMsg('To must be in the future.'); return; }
-      if (b - a > MAX_WINDOW_MS) { setMsg('The window can be 7 days at most.'); return; }
+      if (!Number.isFinite(a) || !Number.isFinite(b)) { setMsg('Check the From and To dates.'); return null; }
+      if (a >= b) { setMsg('From must be before To.'); return null; }
+      if (b <= Date.now()) { setMsg('To must be in the future.'); return null; }
+      if (b - a > MAX_WINDOW_MS) { setMsg('The window can be 7 days at most.'); return null; }
       win = { from: new Date(a).toISOString(), to: new Date(b).toISOString() };
     }
     const offsets = win ? windowOffsets(win.from, win.to, tz) : offsetsOf(form.days);
-    if (offsets.length === 0) { setMsg(win ? 'No games kick off in this window' : 'Tick at least one day.'); return; }
-    if (!form.allLeagues && form.leagues.length === 0) { setMsg('Tick at least one league.'); return; }
-    if (form.markets.length === 0) { setMsg('Tick at least one market.'); return; }
-    if (tv !== 0 && !(tv >= 1.5 && tv <= 100)) { setMsg('My target odds must be between 1.5 and 100.'); return; }
-    if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return; }
-    const f = toFilters(offsets, tv, win);
+    if (offsets.length === 0) { setMsg(win ? 'No games kick off in this window' : 'Tick at least one day.'); return null; }
+    if (!form.allLeagues && form.leagues.length === 0) { setMsg('Tick at least one league.'); return null; }
+    if (form.markets.length === 0) { setMsg('Tick at least one market.'); return null; }
+    if (tv !== 0 && !(tv >= 1.5 && tv <= 100)) { setMsg('My target odds must be between 1.5 and 100.'); return null; }
+    if (form.onlyTarget && tv === 0) { setMsg('Fill in My target odds to use Only my target.'); return null; }
+    return { f: toFilters(offsets, tv, win), tz, win, offsets };
+  }
+
+  async function run() {
+    if (progress) return;
+    const p = prepare();
+    if (!p) return;
+    const { f, tz, win, offsets } = p;
     const leagues = scannable.filter((c) => f.leagues.length === 0 || f.leagues.includes(c.id));
     // All days share one pool: one leg per home|away (the highest probability wins). Draw legs get their own pool.
     const merged = new Map<string, DailyLeg>();
@@ -163,10 +246,26 @@ export default function DailySlips() {
     if (cancelled.current) { setMsg('Scan cancelled. Showing the previous result.'); return; }
     const legs = Array.from(merged.values());
     const drawLegs = Array.from(mergedD.values());
-    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f, drawSlips: f.includeDraws ? buildDrawSlips(drawLegs, f) : [], draws: drawLegs.length };
-    cache = next;
+    const next: Scan = { slips: buildSlips(legs, f), legs: legs.length, games, builtAt: Date.now(), filters: f, drawSlips: f.includeDraws ? buildDrawSlips(drawLegs, f) : [], draws: drawLegs.length, scanned: f };
+    saveStored(DAILY_KEY, remember({ builtAt: next.builtAt, scan: next, games: legs, drawGames: drawLegs }));
     setScan(next);
+    setSaved({ legs, draws: drawLegs });
     void loadPrices(next.slips.flatMap((s) => s.legs));
+  }
+
+  // Builds the slips again from the saved games with the current filters. No network call.
+  function rebuild() {
+    if (progress || !scan) return;
+    const p = prepare();
+    if (!p) return;
+    const f = p.f;
+    if (changed(f, scan.scanned, scan.builtAt)) { setMsg('Filters changed. Tap Build to scan again.'); return; }
+    const was = scan.scanned;
+    const keep = (l: DailyLeg) => (!l.market || !ALL_MARKETS.includes(l.market) || f.markets.includes(l.market)) && (f.minLegOdds <= was.minLegOdds || 1 / l.probability >= f.minLegOdds - 1e-9);
+    const next: Scan = { ...scan, slips: buildSlips(saved.legs.filter(keep), f), filters: f, drawSlips: f.includeDraws ? buildDrawSlips(saved.draws, f) : [] };
+    saveStored(DAILY_KEY, remember({ scan: next }));
+    setScan(next);
+    setMsg('Rebuilt from the saved games. No new scan.');
   }
 
   async function loadPrices(legs: DailyLeg[]) {
@@ -195,12 +294,17 @@ export default function DailySlips() {
   const todayOnly = !scan || (scan.filters.dayOffsets.length === 1 && scan.filters.dayOffsets[0] === 0);
   const winFrom = scan?.filters.from;
   const winTo = scan?.filters.to;
+  const hasGames = saved.legs.length > 0 || saved.draws.length > 0;
+  const mins = scan ? Math.max(0, Math.floor((now - scan.builtAt) / 60000)) : 0;
+  const ageTxt = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ago`;
+  const stale = !!scan && now - scan.builtAt > 3600000;
   return (
     <div className="card stack">
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <span className="h2">Daily slips</span>
-        {scan && <span className="label">Built {new Date(scan.builtAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+        {scan && <span className="label">Built {new Date(scan.builtAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({ageTxt})</span>}
       </div>
+      {stale && <div className="muted" style={{ color: '#b45309', fontWeight: 600 }}>Older than an hour. Games may have started. Refresh before you play.</div>}
       <details>
         <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Filters</summary>
         <div className="stack" style={{ paddingTop: 8 }}>
@@ -258,6 +362,7 @@ export default function DailySlips() {
       <div className="row">
         <button type="button" className="btn" disabled={!!progress} onClick={run}>{buildLabel}</button>
         {scan && !progress && <button type="button" className="btn ghost" onClick={run}>Refresh</button>}
+        {hasGames && !progress && <button type="button" className="btn ghost" onClick={rebuild}>Rebuild</button>}
         {progress && <button type="button" className="btn ghost" onClick={cancel}>Cancel</button>}
       </div>
       {progress && <div className="muted">Scanning {progress.n} of {progress.m} leagues{progress.k > 1 ? `, day ${progress.d} of ${progress.k}` : ''}... {progress.found} matches found</div>}
