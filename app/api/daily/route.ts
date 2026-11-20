@@ -5,6 +5,7 @@ import type { Fixture } from '@/lib/livefeed';
 import { getCompetition } from '@/lib/registry';
 import { DEFAULT_DRAW_MAX, DEFAULT_DRAW_MIN, HARD_MAX_P, HARD_MIN_P, normalizeFilters, windowOffsets } from '@/lib/dailySlips';
 import type { DailyLeg } from '@/lib/dailySlips';
+import { recordLegs } from '@/lib/recordLegs';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -13,6 +14,7 @@ const MAX_FIXTURES = 8; // per league, per day
 const CONCURRENCY = 3;
 const TIMEOUT_MS = 15000;
 const DEADLINE_MS = 50000; // stop starting new matches after this, so a many-day request still answers inside maxDuration
+const RECORD_MS = 4000; // recording the legs may delay the answer by this much at most
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -95,7 +97,7 @@ export async function POST(req: Request) {
               match, home: fx.home, away: fx.away, kickoff: fx.kickoff,
               competitionId, competitionName: competition.name,
               label: 'Draw', probability: d.probability,
-              market: d.query.market, side: 'X', line: d.query.line,
+              group: d.group, market: d.query.market, side: 'X', line: d.query.line, fairOdds: d.fairOdds,
             };
           }
         }
@@ -111,7 +113,7 @@ export async function POST(req: Request) {
           match, home: fx.home, away: fx.away, kickoff: fx.kickoff,
           competitionId, competitionName: competition.name,
           label: best.label, probability: best.probability,
-          market: best.query.market, side: best.query.side, line: best.query.line,
+          group: best.group, market: best.query.market, side: best.query.side, line: best.query.line, fairOdds: best.fairOdds,
         };
       } catch {
         return null;
@@ -125,12 +127,29 @@ export async function POST(req: Request) {
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker));
+    const legs = out.filter((l): l is DailyLeg => l !== null);
+    const drawLegs = f.includeDraws ? dOut.filter((l): l is DailyLeg => l !== null) : [];
+    // Record what was found. Awaited (so a serverless function does not drop it) but capped at RECORD_MS; the result and any failure are ignored.
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY && (legs.length > 0 || drawLegs.length > 0)) {
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stop = new Promise<void>((resolve) => { timer = setTimeout(resolve, RECORD_MS); });
+        const saving = Promise.all([recordLegs(legs, f, 'daily'), recordLegs(drawLegs, f, 'draw')]).then(
+          () => undefined,
+          () => undefined,
+        );
+        await Promise.race([saving, stop]);
+        if (timer) clearTimeout(timer);
+      } catch {
+        // recording never changes the answer
+      }
+    }
     // games = fixtures found (inside the window when one is set), so the app can tell "no games" from "no qualifying picks"
     // drawLegs is only present when includeDraws is true; the normal legs are unchanged.
     return NextResponse.json({
-      legs: out.filter((l): l is DailyLeg => l !== null),
+      legs,
       games: list.length,
-      ...(f.includeDraws ? { drawLegs: dOut.filter((l): l is DailyLeg => l !== null) } : {}),
+      ...(f.includeDraws ? { drawLegs } : {}),
     });
   } catch {
     return NextResponse.json({ legs: [] });

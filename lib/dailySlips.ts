@@ -1,4 +1,5 @@
 // minute / score / pricedAt are set only on live legs (minute of play, score like '1-0', ISO time the leg was priced).
+// group / fairOdds are set by the daily route from the chosen candidate (group = market group, fairOdds = model fair odds); the recorder stores them.
 export interface DailyLeg {
   match: string;
   home: string;
@@ -6,9 +7,11 @@ export interface DailyLeg {
   kickoff: string;
   competitionId: string;
   competitionName: string;
+  group?: string;
   market?: string;
   side?: string;
   line?: number;
+  fairOdds?: number;
   label: string;
   probability: number;
   minute?: number;
